@@ -113,7 +113,7 @@ class UltravoxInterface:
 
     def create_interface(self):
         with gr.Blocks(theme="soft") as interface:
-            gr.Markdown("# 📞 Ultravox <> Twilio Call System", elem_classes="text-3xl font-bold text-center")
+            gr.Markdown("# 📞 Ultravox <> Twilio", elem_classes="text-3xl font-bold text-center")
             
             with gr.Row():
                 assistant_type = gr.Dropdown(
