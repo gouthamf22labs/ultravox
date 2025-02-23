@@ -16,19 +16,17 @@ from assistants import (
 
 load_dotenv()
 
-# Constants
 DEFAULT_ASSISTANT = "INTERVIEW_SCHEDULING_AGENT"
 ASSISTANT_TYPES = {
-    "INTERVIEW_SCHEDULING_AGENT": INTERVIEW_SCHEDULING_AGENT,
-    "INTERVIEW_SCREENING_AGENT": INTERVIEW_SCREENING_AGENT,
-    "RESUME_UPDATE_AGENT": RESUME_UPDATE_AGENT,
-    "REAL_ESTATE_AGENT": REAL_ESTATE_AGENT,
-    "CUSTOMER_SUPPORT_AGENT": CUSTOMER_SUPPORT_AGENT,
-    "BANKING_SUPPORT_AGENT": BANKING_SUPPORT_AGENT,
-    "HEALTHCARE_AGENT": HEALTHCARE_AGENT,
+    "Interview Scheduling": INTERVIEW_SCHEDULING_AGENT,
+    "Interview Screening": INTERVIEW_SCREENING_AGENT,
+    "Resume Update": RESUME_UPDATE_AGENT,
+    "Real Estate": REAL_ESTATE_AGENT,
+    "Customer Support": CUSTOMER_SUPPORT_AGENT,
+    "Banking Support": BANKING_SUPPORT_AGENT,
+    "Healthcare": HEALTHCARE_AGENT,
 }
 
-# Country codes for dropdown
 COUNTRY_CODES = [
     {"name": "India", "code": "+91"},
     {"name": "United States", "code": "+1"},
@@ -44,32 +42,16 @@ COUNTRY_CODES = [
 
 class PhoneNumberValidator:
     @staticmethod
-    def format_phone_number(country_code: str, phone_number: str) -> tuple[bool, str]:
-        """
-        Validate and format the phone number with country code
-        Returns: (is_valid, formatted_number) tuple
-        """
+    def format_phone_number(country_code: str, phone_number: str):
         try:
-            # Remove any spaces or special characters from phone number
-            cleaned_number = ''.join(filter(str.isdigit, phone_number))
-            
-            # Combine country code and number
+            cleaned_number = "".join(filter(str.isdigit, phone_number))
             full_number = f"{country_code}{cleaned_number}"
-            
-            # Parse and validate the number
             parsed_number = phonenumbers.parse(full_number)
             if not phonenumbers.is_valid_number(parsed_number):
-                return False, "Invalid phone number"
-                
-            # Format in E.164 format
-            formatted_number = phonenumbers.format_number(
-                parsed_number, 
-                phonenumbers.PhoneNumberFormat.E164
-            )
-            return True, formatted_number
-            
+                raise gr.Error("Invalid phone number")
+            return phonenumbers.format_number(parsed_number, phonenumbers.PhoneNumberFormat.E164)
         except Exception as e:
-            return False, f"Error: {str(e)}"
+            raise gr.Error(f"Error: {str(e)}")
 
 class UltravoxCallManager:
     def __init__(self):
@@ -80,10 +62,11 @@ class UltravoxCallManager:
             "TWILIO_PHONE_NUMBER": os.getenv("TWILIO_PHONE_NUMBER"),
         }
 
-    def create_call(self, system_prompt, phone_number):
-        if not all(self.env_vars.values()):
-            return "Error: Missing environment variables", None
-
+    def initiate_call(self, system_prompt, country_code, phone_number):
+        gr.Info("Validating phone number...")
+        formatted_number = PhoneNumberValidator.format_phone_number(country_code, phone_number)
+        
+        gr.Info("Creating Ultravox call...")
         call_config = {
             "systemPrompt": system_prompt,
             "model": "fixie-ai/ultravox",
@@ -92,7 +75,7 @@ class UltravoxCallManager:
             "firstSpeaker": "FIRST_SPEAKER_USER",
             "medium": {"twilio": {}},
         }
-
+        
         try:
             response = requests.post(
                 "https://api.ultravox.ai/api/calls",
@@ -103,25 +86,13 @@ class UltravoxCallManager:
                 json=call_config
             )
             response.raise_for_status()
-            return "Success", response.json().get("joinUrl")
+            join_url = response.json().get("joinUrl")
+            if not join_url:
+                raise gr.Error("Failed to create call")
         except requests.exceptions.RequestException as e:
-            return f"Error: {str(e)}", None
-
-    def initiate_call(self, system_prompt: str, country_code: str, phone_number: str):
-        if not all([system_prompt, country_code, phone_number]):
-            return "Error: Please fill in all fields"
-
-        # Validate and format phone number
-        is_valid, formatted_number = PhoneNumberValidator.format_phone_number(
-            country_code, phone_number
-        )
-        if not is_valid:
-            return formatted_number
-
-        status, join_url = self.create_call(system_prompt, formatted_number)
-        if not join_url:
-            return status
-
+            raise gr.Error(str(e))
+        
+        gr.Info("Initiating Twilio call...")
         try:
             client = Client(
                 self.env_vars["TWILIO_ACCOUNT_SID"],
@@ -132,81 +103,68 @@ class UltravoxCallManager:
                 to=formatted_number,
                 from_=self.env_vars["TWILIO_PHONE_NUMBER"]
             )
-            return f"Success: Call initiated (SID: {call.sid})"
+            gr.Success(f"Call initiated! Call SID: {call.sid}")
         except Exception as e:
-            return f"Error: {str(e)}"
+            raise gr.Error(str(e))
 
 class UltravoxInterface:
     def __init__(self):
         self.call_manager = UltravoxCallManager()
 
-    def get_prompt(self, assistant_type: str) -> str:
-        """Get the appropriate prompt based on selection"""
-        return ASSISTANT_TYPES.get(assistant_type, ASSISTANT_TYPES[DEFAULT_ASSISTANT])
-
-    def clear_fields(self):
-        """Clear the input fields"""
-        return [COUNTRY_CODES[0]["code"], "", ""]  # Reset to first country code
-
     def create_interface(self):
-        """Create the Gradio interface"""
-        with gr.Blocks() as interface:
-            gr.Markdown("# Ultravox <> Twilio")
-
+        with gr.Blocks(theme="soft") as interface:
+            gr.Markdown("# 📞 Ultravox <> Twilio Call System", elem_classes="text-3xl font-bold text-center")
+            
             with gr.Row():
                 assistant_type = gr.Dropdown(
                     choices=list(ASSISTANT_TYPES.keys()),
-                    label="Select Call Type",
-                    value=DEFAULT_ASSISTANT
+                    label="Call Type",
+                    value="Interview Scheduling",
+                    elem_classes="w-full"
                 )
 
             with gr.Row():
                 country_code = gr.Dropdown(
                     choices=[f"{c['name']} ({c['code']})" for c in COUNTRY_CODES],
                     label="Country Code",
-                    value=f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})"                )
+                    value=f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",
+                    elem_classes="w-1/3"
+                )
                 phone_number = gr.Textbox(
                     label="Mobile Number",
                     placeholder="Enter mobile number without country code",
-                    max_lines=1
+                    max_lines=1,
+                    elem_classes="w-2/3"
                 )
-
+            
             system_prompt = gr.TextArea(
-                label="Prompt - Edit as per your need.",
-                lines=10,
-                value=ASSISTANT_TYPES[DEFAULT_ASSISTANT]
+                label="Call Prompt",
+                lines=8,
+                value=ASSISTANT_TYPES["Interview Scheduling"],
+                elem_classes="w-full border border-gray-300 p-2 rounded-lg"
             )
-
-            assistant_type.change(
-                fn=self.get_prompt,
-                inputs=[assistant_type],
-                outputs=[system_prompt]
-            )
-
+            
             with gr.Row():
-                submit_btn = gr.Button("Initiate Call", variant="primary")
-                clear_btn = gr.Button("Clear", variant="secondary")
-
-            output = gr.Textbox(label="Status", interactive=False)
-
-            # Extract country code from selection
+                submit_btn = gr.Button("📞 Initiate Call", variant="primary", elem_classes="w-1/2 bg-blue-600 text-white")
+                clear_btn = gr.Button("🧹 Clear", variant="secondary", elem_classes="w-1/2 bg-gray-400 text-white")
+            
             def get_country_code(selection):
                 return selection.split('(')[1].strip(')')
-
+            
             submit_btn.click(
                 fn=lambda p, c, n: self.call_manager.initiate_call(
                     p, get_country_code(c), n
                 ),
                 inputs=[system_prompt, country_code, phone_number],
-                outputs=[output]
+                outputs=[]
             )
 
             clear_btn.click(
-                fn=self.clear_fields,
+                fn=lambda: [COUNTRY_CODES[0]["code"], "", ""],
                 inputs=[],
-                outputs=[country_code, phone_number, output]
+                outputs=[country_code, phone_number, system_prompt]
             )
-
+        
         return interface
 
 def main():
