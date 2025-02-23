@@ -3,6 +3,7 @@ import os
 from twilio.rest import Client
 import requests
 from dotenv import load_dotenv
+import phonenumbers
 from assistants import (
     INTERVIEW_SCHEDULING_AGENT,
     INTERVIEW_SCREENING_AGENT,
@@ -15,105 +16,203 @@ from assistants import (
 
 load_dotenv()
 
+# Constants
+DEFAULT_ASSISTANT = "INTERVIEW_SCHEDULING_AGENT"
+ASSISTANT_TYPES = {
+    "INTERVIEW_SCHEDULING_AGENT": INTERVIEW_SCHEDULING_AGENT,
+    "INTERVIEW_SCREENING_AGENT": INTERVIEW_SCREENING_AGENT,
+    "RESUME_UPDATE_AGENT": RESUME_UPDATE_AGENT,
+    "REAL_ESTATE_AGENT": REAL_ESTATE_AGENT,
+    "CUSTOMER_SUPPORT_AGENT": CUSTOMER_SUPPORT_AGENT,
+    "BANKING_SUPPORT_AGENT": BANKING_SUPPORT_AGENT,
+    "HEALTHCARE_AGENT": HEALTHCARE_AGENT,
+}
 
-def create_ultravox_call(system_prompt, phone_number):
-    env_vars = {
-        "ULTRAVOX_API_KEY": os.getenv("ULTRAVOX_API_KEY"),
-        "TWILIO_ACCOUNT_SID": os.getenv("TWILIO_ACCOUNT_SID"),
-        "TWILIO_AUTH_TOKEN": os.getenv("TWILIO_AUTH_TOKEN"),
-        "TWILIO_PHONE_NUMBER": os.getenv("TWILIO_PHONE_NUMBER"),
-    }
+# Country codes for dropdown
+COUNTRY_CODES = [
+    {"name": "India", "code": "+91"},
+    {"name": "United States", "code": "+1"},
+    {"name": "United Kingdom", "code": "+44"},
+    {"name": "Canada", "code": "+1"},
+    {"name": "Australia", "code": "+61"},
+    {"name": "Germany", "code": "+49"},
+    {"name": "France", "code": "+33"},
+    {"name": "Japan", "code": "+81"},
+    {"name": "China", "code": "+86"},
+    {"name": "Singapore", "code": "+65"},
+]
 
-    if not all(env_vars.values()):
-        return "Error: Missing environment variables", None
+class PhoneNumberValidator:
+    @staticmethod
+    def format_phone_number(country_code: str, phone_number: str) -> tuple[bool, str]:
+        """
+        Validate and format the phone number with country code
+        Returns: (is_valid, formatted_number) tuple
+        """
+        try:
+            # Remove any spaces or special characters from phone number
+            cleaned_number = ''.join(filter(str.isdigit, phone_number))
+            
+            # Combine country code and number
+            full_number = f"{country_code}{cleaned_number}"
+            
+            # Parse and validate the number
+            parsed_number = phonenumbers.parse(full_number)
+            if not phonenumbers.is_valid_number(parsed_number):
+                return False, "Invalid phone number"
+                
+            # Format in E.164 format
+            formatted_number = phonenumbers.format_number(
+                parsed_number, 
+                phonenumbers.PhoneNumberFormat.E164
+            )
+            return True, formatted_number
+            
+        except Exception as e:
+            return False, f"Error: {str(e)}"
 
-    call_config = {
-        "systemPrompt": system_prompt,
-        "model": "fixie-ai/ultravox",
-        "voice": "Riya-Hindi-Urdu",
-        "temperature": 0.3,
-        "firstSpeaker": "FIRST_SPEAKER_USER",
-        "medium": {"twilio": {}},
-    }
+class UltravoxCallManager:
+    def __init__(self):
+        self.env_vars = {
+            "ULTRAVOX_API_KEY": os.getenv("ULTRAVOX_API_KEY"),
+            "TWILIO_ACCOUNT_SID": os.getenv("TWILIO_ACCOUNT_SID"),
+            "TWILIO_AUTH_TOKEN": os.getenv("TWILIO_AUTH_TOKEN"),
+            "TWILIO_PHONE_NUMBER": os.getenv("TWILIO_PHONE_NUMBER"),
+        }
 
-    try:
-        response = requests.post(
-            "https://api.ultravox.ai/api/calls", headers={"Content-Type": "application/json", "X-API-Key": env_vars["ULTRAVOX_API_KEY"]}, json=call_config
+    def create_call(self, system_prompt, phone_number):
+        if not all(self.env_vars.values()):
+            return "Error: Missing environment variables", None
+
+        call_config = {
+            "systemPrompt": system_prompt,
+            "model": "fixie-ai/ultravox",
+            "voice": "Riya-Hindi-Urdu",
+            "temperature": 0.3,
+            "firstSpeaker": "FIRST_SPEAKER_USER",
+            "medium": {"twilio": {}},
+        }
+
+        try:
+            response = requests.post(
+                "https://api.ultravox.ai/api/calls",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"]
+                },
+                json=call_config
+            )
+            response.raise_for_status()
+            return "Success", response.json().get("joinUrl")
+        except requests.exceptions.RequestException as e:
+            return f"Error: {str(e)}", None
+
+    def initiate_call(self, system_prompt: str, country_code: str, phone_number: str):
+        if not all([system_prompt, country_code, phone_number]):
+            return "Error: Please fill in all fields"
+
+        # Validate and format phone number
+        is_valid, formatted_number = PhoneNumberValidator.format_phone_number(
+            country_code, phone_number
         )
-        response.raise_for_status()
-        return "Success", response.json().get("joinUrl")
-    except requests.exceptions.RequestException as e:
-        return f"Error: {str(e)}", None
+        if not is_valid:
+            return formatted_number
 
+        status, join_url = self.create_call(system_prompt, formatted_number)
+        if not join_url:
+            return status
 
-def initiate_call(system_prompt: str, phone_number: str):
-    if not all([system_prompt, phone_number]):
-        return "Error: Please fill in all fields"
+        try:
+            client = Client(
+                self.env_vars["TWILIO_ACCOUNT_SID"],
+                self.env_vars["TWILIO_AUTH_TOKEN"]
+            )
+            call = client.calls.create(
+                twiml=f'<Response><Connect><Stream url="{join_url}"/></Connect></Response>',
+                to=formatted_number,
+                from_=self.env_vars["TWILIO_PHONE_NUMBER"]
+            )
+            return f"Success: Call initiated (SID: {call.sid})"
+        except Exception as e:
+            return f"Error: {str(e)}"
 
-    status, join_url = create_ultravox_call(system_prompt, phone_number)
-    if not join_url:
-        return status
+class UltravoxInterface:
+    def __init__(self):
+        self.call_manager = UltravoxCallManager()
 
-    try:
-        client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
-        call = client.calls.create(
-            twiml=f'<Response><Connect><Stream url="{join_url}"/></Connect></Response>', to=phone_number, from_=os.getenv("TWILIO_PHONE_NUMBER")
-        )
-        return f"Success: Call initiated (SID: {call.sid})"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    def get_prompt(self, assistant_type: str) -> str:
+        """Get the appropriate prompt based on selection"""
+        return ASSISTANT_TYPES.get(assistant_type, ASSISTANT_TYPES[DEFAULT_ASSISTANT])
 
+    def clear_fields(self):
+        """Clear the input fields"""
+        return [COUNTRY_CODES[0]["code"], "", ""]  # Reset to first country code
 
-def get_prompt(assistant_type: str) -> str:
-    """Get the appropriate prompt based on selection"""
-    assistants = {
-        "INTERVIEW_SCHEDULING_AGENT": INTERVIEW_SCHEDULING_AGENT,
-        "INTERVIEW_SCREENING_AGENT": INTERVIEW_SCREENING_AGENT,
-        "RESUME_UPDATE_AGENT": RESUME_UPDATE_AGENT,
-        "REAL_ESTATE_AGENT": REAL_ESTATE_AGENT,
-        "CUSTOMER_SUPPORT_AGENT": CUSTOMER_SUPPORT_AGENT,
-        "BANKING_SUPPORT_AGENT": BANKING_SUPPORT_AGENT,
-        "HEALTHCARE_AGENT": HEALTHCARE_AGENT,
-    }
-    return assistants.get(assistant_type, INTERVIEW_SCHEDULING_AGENT)
+    def create_interface(self):
+        """Create the Gradio interface"""
+        with gr.Blocks() as interface:
+            gr.Markdown("# Ultravox <> Twilio")
 
+            with gr.Row():
+                assistant_type = gr.Dropdown(
+                    choices=list(ASSISTANT_TYPES.keys()),
+                    label="Select Call Type",
+                    value=DEFAULT_ASSISTANT
+                )
 
-def create_interface():
-    with gr.Blocks(title="ULTRAVOX") as interface:
-        gr.Markdown("# ULTRAVOX")
+            with gr.Row():
+                country_code = gr.Dropdown(
+                    choices=[f"{c['name']} ({c['code']})" for c in COUNTRY_CODES],
+                    label="Country Code",
+                    value=f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})"                )
+                phone_number = gr.Textbox(
+                    label="Mobile Number",
+                    placeholder="Enter mobile number without country code",
+                    max_lines=1
+                )
 
-        with gr.Row():
-            assistant_type = gr.Dropdown(
-                choices=[
-                    "INTERVIEW_SCHEDULING_AGENT",
-                    "INTERVIEW_SCREENING_AGENT",
-                    "RESUME_UPDATE_AGENT",
-                    "REAL_ESTATE_AGENT",
-                    "CUSTOMER_SUPPORT_AGENT",
-                    "BANKING_SUPPORT_AGENT",
-                    "HEALTHCARE_AGENT",
-                ],
-                label="Select Call Type",
+            system_prompt = gr.TextArea(
+                label="Prompt - Edit as per your need.",
+                lines=10,
+                value=ASSISTANT_TYPES[DEFAULT_ASSISTANT]
             )
 
-            phone_number = gr.Textbox(label="Phone Number", placeholder="Enter phone number with country code")
+            assistant_type.change(
+                fn=self.get_prompt,
+                inputs=[assistant_type],
+                outputs=[system_prompt]
+            )
 
-        system_prompt = gr.TextArea(label="Prompt - Edit as per your need.", lines=10)
-        assistant_type.change(fn=get_prompt, inputs=[assistant_type], outputs=[system_prompt])
+            with gr.Row():
+                submit_btn = gr.Button("Initiate Call", variant="primary")
+                clear_btn = gr.Button("Clear", variant="secondary")
 
-        with gr.Row():
-            submit_btn = gr.Button("Initiate Call", variant="primary")
-            clear_btn = gr.Button("Clear", variant="secondary")
+            output = gr.Textbox(label="Status", interactive=False)
 
-        output = gr.Textbox(label="Status", interactive=False)
+            # Extract country code from selection
+            def get_country_code(selection):
+                return selection.split('(')[1].strip(')')
 
-        submit_btn.click(fn=initiate_call, inputs=[system_prompt, phone_number], outputs=[output])
+            submit_btn.click(
+                fn=lambda p, c, n: self.call_manager.initiate_call(
+                    p, get_country_code(c), n
+                ),
+                inputs=[system_prompt, country_code, phone_number],
+                outputs=[output]
+            )
 
-        clear_btn.click(fn=lambda: ["", ""], inputs=[], outputs=[phone_number, output])
+            clear_btn.click(
+                fn=self.clear_fields,
+                inputs=[],
+                outputs=[country_code, phone_number, output]
+            )
 
-    return interface
+        return interface
 
+def main():
+    app = UltravoxInterface()
+    interface = app.create_interface()
+    interface.launch()
 
 if __name__ == "__main__":
-    interface = create_interface()
-    interface.launch(share=True)
+    main()
