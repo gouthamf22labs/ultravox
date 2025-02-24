@@ -111,18 +111,22 @@ class UltravoxInterface:
     def __init__(self):
         self.call_manager = UltravoxCallManager()
 
+    def update_prompt(self,selected_type):
+        return ASSISTANT_TYPES[selected_type]
+
     def create_interface(self):
         with gr.Blocks(theme="soft") as interface:
             gr.Markdown("# 📞 Ultravox <> Twilio", elem_classes="text-3xl font-bold text-center")
             
             with gr.Row():
+                choices = list(ASSISTANT_TYPES.keys())
                 assistant_type = gr.Dropdown(
-                    choices=list(ASSISTANT_TYPES.keys()),
-                    label="Call Type",
-                    value="Interview Scheduling",
-                    elem_classes="w-full"
-                )
-
+                        choices=choices,
+                        label="Call Type",
+                        value=choices[0],
+                        interactive=True,
+                        elem_classes="w-full"
+                    )
             with gr.Row():
                 country_code = gr.Dropdown(
                     choices=[f"{c['name']} ({c['code']})" for c in COUNTRY_CODES],
@@ -150,6 +154,12 @@ class UltravoxInterface:
             
             def get_country_code(selection):
                 return selection.split('(')[1].strip(')')
+            
+            assistant_type.change(
+                fn=self.update_prompt,
+                inputs=[assistant_type],
+                outputs=[system_prompt]
+            )
             
             submit_btn.click(
                 fn=lambda p, c, n: self.call_manager.initiate_call(
