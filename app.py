@@ -12,6 +12,7 @@ from assistants import (
     CUSTOMER_SUPPORT_AGENT,
     BANKING_SUPPORT_AGENT,
     HEALTHCARE_AGENT,
+    INSURANCE_ASSISTANT,
 )
 
 load_dotenv()
@@ -25,6 +26,7 @@ ASSISTANT_TYPES = {
     "Customer Support": CUSTOMER_SUPPORT_AGENT,
     "Banking Support": BANKING_SUPPORT_AGENT,
     "Healthcare": HEALTHCARE_AGENT,
+    "Insurance Policy Agent": INSURANCE_ASSISTANT,
 }
 
 COUNTRY_CODES = [
@@ -40,6 +42,7 @@ COUNTRY_CODES = [
     {"name": "Singapore", "code": "+65"},
 ]
 
+
 class PhoneNumberValidator:
     @staticmethod
     def format_phone_number(country_code: str, phone_number: str):
@@ -53,6 +56,7 @@ class PhoneNumberValidator:
         except Exception as e:
             raise gr.Error(f"Error: {str(e)}")
 
+
 class UltravoxCallManager:
     def __init__(self):
         self.env_vars = {
@@ -65,7 +69,7 @@ class UltravoxCallManager:
     def initiate_call(self, system_prompt, country_code, phone_number):
         gr.Info("Validating phone number...")
         formatted_number = PhoneNumberValidator.format_phone_number(country_code, phone_number)
-        
+
         gr.Info("Creating Ultravox call...")
         call_config = {
             "systemPrompt": system_prompt,
@@ -75,15 +79,12 @@ class UltravoxCallManager:
             "firstSpeaker": "FIRST_SPEAKER_USER",
             "medium": {"twilio": {}},
         }
-        
+
         try:
             response = requests.post(
                 "https://api.ultravox.ai/api/calls",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"]
-                },
-                json=call_config
+                headers={"Content-Type": "application/json", "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"]},
+                json=call_config,
             )
             response.raise_for_status()
             join_url = response.json().get("joinUrl")
@@ -91,96 +92,71 @@ class UltravoxCallManager:
                 raise gr.Error("Failed to create call")
         except requests.exceptions.RequestException as e:
             raise gr.Error(str(e))
-        
+
         gr.Info("Initiating Twilio call...")
         try:
-            client = Client(
-                self.env_vars["TWILIO_ACCOUNT_SID"],
-                self.env_vars["TWILIO_AUTH_TOKEN"]
-            )
+            client = Client(self.env_vars["TWILIO_ACCOUNT_SID"], self.env_vars["TWILIO_AUTH_TOKEN"])
             call = client.calls.create(
                 twiml=f'<Response><Connect><Stream url="{join_url}"/></Connect></Response>',
                 to=formatted_number,
-                from_=self.env_vars["TWILIO_PHONE_NUMBER"]
+                from_=self.env_vars["TWILIO_PHONE_NUMBER"],
+                record=True,
             )
             gr.Success(f"Call initiated! Call SID: {call.sid}")
         except Exception as e:
             raise gr.Error(str(e))
 
+
 class UltravoxInterface:
     def __init__(self):
         self.call_manager = UltravoxCallManager()
 
-    def update_prompt(self,selected_type):
+    def update_prompt(self, selected_type):
         return ASSISTANT_TYPES[selected_type]
 
     def create_interface(self):
         with gr.Blocks(theme="soft") as interface:
             gr.Markdown("# 📞 Ultravox <> Twilio", elem_classes="text-3xl font-bold text-center")
-            
+
             with gr.Row():
                 choices = list(ASSISTANT_TYPES.keys())
-                assistant_type = gr.Dropdown(
-                        choices=choices,
-                        label="Call Type",
-                        value=choices[0],
-                        interactive=True,
-                        elem_classes="w-full"
-                    )
+                assistant_type = gr.Dropdown(choices=choices, label="Call Type", value=choices[0], interactive=True, elem_classes="w-full")
             with gr.Row():
                 country_code = gr.Dropdown(
                     choices=[f"{c['name']} ({c['code']})" for c in COUNTRY_CODES],
                     label="Country Code",
                     value=f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",
-                    elem_classes="w-1/3"
+                    elem_classes="w-1/3",
                 )
-                phone_number = gr.Textbox(
-                    label="Mobile Number",
-                    placeholder="Enter mobile number without country code",
-                    max_lines=1,
-                    elem_classes="w-2/3"
-                )
-            
+                phone_number = gr.Textbox(label="Mobile Number", placeholder="Enter mobile number without country code", max_lines=1, elem_classes="w-2/3")
+
             system_prompt = gr.TextArea(
-                label="Call Prompt",
-                lines=8,
-                value=ASSISTANT_TYPES["Interview Scheduling"],
-                elem_classes="w-full border border-gray-300 p-2 rounded-lg"
+                label="Call Prompt", lines=8, value=ASSISTANT_TYPES["Interview Scheduling"], elem_classes="w-full border border-gray-300 p-2 rounded-lg"
             )
-            
+
             with gr.Row():
                 submit_btn = gr.Button("📞 Initiate Call", variant="primary", elem_classes="w-1/2 bg-blue-600 text-white")
                 clear_btn = gr.Button("🧹 Clear", variant="secondary", elem_classes="w-1/2 bg-gray-400 text-white")
-            
+
             def get_country_code(selection):
-                return selection.split('(')[1].strip(')')
-            
-            assistant_type.change(
-                fn=self.update_prompt,
-                inputs=[assistant_type],
-                outputs=[system_prompt]
-            )
-            
+                return selection.split("(")[1].strip(")")
+
+            assistant_type.change(fn=self.update_prompt, inputs=[assistant_type], outputs=[system_prompt])
+
             submit_btn.click(
-                fn=lambda p, c, n: self.call_manager.initiate_call(
-                    p, get_country_code(c), n
-                ),
-                inputs=[system_prompt, country_code, phone_number],
-                outputs=[]
+                fn=lambda p, c, n: self.call_manager.initiate_call(p, get_country_code(c), n), inputs=[system_prompt, country_code, phone_number], outputs=[]
             )
 
-            clear_btn.click(
-                fn=lambda: [COUNTRY_CODES[0]["code"], "", ""],
-                inputs=[],
-                outputs=[country_code, phone_number, system_prompt]
-            )
-        
+            clear_btn.click(fn=lambda: [COUNTRY_CODES[0]["code"], "", ""], inputs=[], outputs=[country_code, phone_number, system_prompt])
+
         return interface
+
 
 def main():
     app = UltravoxInterface()
     interface = app.create_interface()
     interface.launch()
+
 
 if __name__ == "__main__":
     main()
