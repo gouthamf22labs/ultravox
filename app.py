@@ -1,5 +1,6 @@
 import gradio as gr
 import os
+import plivo
 from twilio.rest import Client
 import requests
 from dotenv import load_dotenv
@@ -17,7 +18,7 @@ from assistants import (
 
 load_dotenv()
 
-DEFAULT_ASSISTANT = "INTERVIEW_SCHEDULING_AGENT"
+
 ASSISTANT_TYPES = {
     "Interview Scheduling": INTERVIEW_SCHEDULING_AGENT,
     "Interview Screening": INTERVIEW_SCREENING_AGENT,
@@ -28,6 +29,7 @@ ASSISTANT_TYPES = {
     "Healthcare": HEALTHCARE_AGENT,
     "Insurance Policy Agent": INSURANCE_ASSISTANT,
 }
+
 
 COUNTRY_CODES = [
     {"name": "India", "code": "+91"},
@@ -41,6 +43,7 @@ COUNTRY_CODES = [
     {"name": "China", "code": "+86"},
     {"name": "Singapore", "code": "+65"},
 ]
+
 
 
 class PhoneNumberValidator:
@@ -57,6 +60,7 @@ class PhoneNumberValidator:
             raise gr.Error(f"Error: {str(e)}")
 
 
+
 class UltravoxCallManager:
     def __init__(self):
         self.env_vars = {
@@ -64,9 +68,12 @@ class UltravoxCallManager:
             "TWILIO_ACCOUNT_SID": os.getenv("TWILIO_ACCOUNT_SID"),
             "TWILIO_AUTH_TOKEN": os.getenv("TWILIO_AUTH_TOKEN"),
             "TWILIO_PHONE_NUMBER": os.getenv("TWILIO_PHONE_NUMBER"),
+            "PLIVO_AUTH_ID": os.getenv("PLIVO_AUTH_ID"),
+            "PLIVO_AUTH_TOKEN": os.getenv("PLIVO_AUTH_TOKEN"),
+            "PLIVO_PHONE_NUMBER": os.getenv("PLIVO_PHONE_NUMBER"),
         }
 
-    def initiate_call(self, system_prompt, country_code, phone_number):
+    def initiate_call(self, provider, system_prompt, country_code, phone_number):
         gr.Info("Validating phone number...")
         formatted_number = PhoneNumberValidator.format_phone_number(country_code, phone_number)
 
@@ -77,13 +84,16 @@ class UltravoxCallManager:
             "voice": "Riya-Hindi-Urdu",
             "temperature": 0.3,
             "firstSpeaker": "FIRST_SPEAKER_USER",
-            "medium": {"twilio": {}},
+            "medium": {provider.lower(): {}}, 
         }
 
         try:
             response = requests.post(
                 "https://api.ultravox.ai/api/calls",
-                headers={"Content-Type": "application/json", "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"]},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
+                },
                 json=call_config,
             )
             response.raise_for_status()
@@ -93,18 +103,40 @@ class UltravoxCallManager:
         except requests.exceptions.RequestException as e:
             raise gr.Error(str(e))
 
-        gr.Info("Initiating Twilio call...")
-        try:
-            client = Client(self.env_vars["TWILIO_ACCOUNT_SID"], self.env_vars["TWILIO_AUTH_TOKEN"])
-            call = client.calls.create(
-                twiml=f'<Response><Connect><Stream url="{join_url}"/></Connect></Response>',
-                to=formatted_number,
-                from_=self.env_vars["TWILIO_PHONE_NUMBER"],
-                record=True,
-            )
-            gr.Success(f"Call initiated! Call SID: {call.sid}")
-        except Exception as e:
-            raise gr.Error(str(e))
+        if provider == "Twilio":
+            gr.Info("Initiating Twilio call...")
+            try:
+                client = Client(
+                    self.env_vars["TWILIO_ACCOUNT_SID"],
+                    self.env_vars["TWILIO_AUTH_TOKEN"]
+                )
+                call = client.calls.create(
+                    twiml=f'<Response><Connect><Stream url="{join_url}"/></Connect></Response>',
+                    to=formatted_number,
+                    from_=self.env_vars["TWILIO_PHONE_NUMBER"],
+                    record=True,
+                )
+                gr.Success(f"Twilio call initiated! Call SID: {call.sid}")
+            except Exception as e:
+                raise gr.Error(str(e))
+
+        elif provider == "Plivo":
+            gr.Info("Initiating Plivo call...")
+            try:
+                client = plivo.RestClient(
+                    auth_id=self.env_vars["PLIVO_AUTH_ID"],
+                    auth_token=self.env_vars["PLIVO_AUTH_TOKEN"]
+                )
+                response = client.calls.create(
+                    from_=self.env_vars["PLIVO_PHONE_NUMBER"],
+                    to_=formatted_number,
+                    answer_url=f"https://hari-tools.f22labs.dev/webhook/plivo-ans?joinUrl={join_url}",
+                    answer_method="GET",
+                )
+                gr.Success("Plivo call initiated!")
+            except Exception as e:
+                raise gr.Error(str(e))
+
 
 
 class UltravoxInterface:
@@ -116,11 +148,27 @@ class UltravoxInterface:
 
     def create_interface(self):
         with gr.Blocks(theme="soft") as interface:
-            gr.Markdown("# 📞 Ultravox <> Twilio", elem_classes="text-3xl font-bold text-center")
+            gr.Markdown("# 📞 Ultravox Call Manager", elem_classes="text-3xl font-bold text-center")
+
+            with gr.Row():
+                provider = gr.Dropdown(
+                    choices=["Twilio", "Plivo"],
+                    label="Provider",
+                    value="Twilio",
+                    interactive=True,
+                    elem_classes="w-full",
+                )
 
             with gr.Row():
                 choices = list(ASSISTANT_TYPES.keys())
-                assistant_type = gr.Dropdown(choices=choices, label="Call Type", value=choices[0], interactive=True, elem_classes="w-full")
+                assistant_type = gr.Dropdown(
+                    choices=choices,
+                    label="Call Type",
+                    value=choices[0],
+                    interactive=True,
+                    elem_classes="w-full"
+                )
+
             with gr.Row():
                 country_code = gr.Dropdown(
                     choices=[f"{c['name']} ({c['code']})" for c in COUNTRY_CODES],
@@ -128,10 +176,18 @@ class UltravoxInterface:
                     value=f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",
                     elem_classes="w-1/3",
                 )
-                phone_number = gr.Textbox(label="Mobile Number", placeholder="Enter mobile number without country code", max_lines=1, elem_classes="w-2/3")
+                phone_number = gr.Textbox(
+                    label="Mobile Number",
+                    placeholder="Enter mobile number without country code",
+                    max_lines=1,
+                    elem_classes="w-2/3",
+                )
 
             system_prompt = gr.TextArea(
-                label="Call Prompt", lines=8, value=ASSISTANT_TYPES["Interview Scheduling"], elem_classes="w-full border border-gray-300 p-2 rounded-lg"
+                label="Call Prompt",
+                lines=8,
+                value=ASSISTANT_TYPES["Interview Scheduling"],
+                elem_classes="w-full border border-gray-300 p-2 rounded-lg"
             )
 
             with gr.Row():
@@ -144,10 +200,16 @@ class UltravoxInterface:
             assistant_type.change(fn=self.update_prompt, inputs=[assistant_type], outputs=[system_prompt])
 
             submit_btn.click(
-                fn=lambda p, c, n: self.call_manager.initiate_call(p, get_country_code(c), n), inputs=[system_prompt, country_code, phone_number], outputs=[]
+                fn=lambda prov, p, c, n: self.call_manager.initiate_call(prov, p, get_country_code(c), n),
+                inputs=[provider, system_prompt, country_code, phone_number],
+                outputs=[],
             )
 
-            clear_btn.click(fn=lambda: [COUNTRY_CODES[0]["code"], "", ""], inputs=[], outputs=[country_code, phone_number, system_prompt])
+            clear_btn.click(
+                fn=lambda: ["Twilio", f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})", "", ""],
+                inputs=[],
+                outputs=[provider, country_code, phone_number, system_prompt],
+            )
 
         return interface
 
