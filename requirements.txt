@@ -2,3 +2,4 @@ gradio==5.14.0
 twilio==9.4.4
 python-dotenv==1.0.1
 phonenumbers==8.13.55
+plivo==4.59.2
