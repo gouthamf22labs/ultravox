@@ -265,6 +265,7 @@ class UltravoxCallManager:
             "temperature": 0.3,
             "firstSpeaker": "FIRST_SPEAKER_USER",
             "medium": {provider.lower(): {}},
+            "recordingEnabled": True,
         }
 
         try:
