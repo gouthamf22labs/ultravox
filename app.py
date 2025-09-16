@@ -160,13 +160,14 @@ class BatchProcessor:
 
                 # Make the call
                 try:
-                    self.call_manager.initiate_call(
+                    call_id = self.call_manager.initiate_call(
                         provider, personalized_prompt, country_code, phone_number
                     )
                     result = {
                         "row": index + 1,
                         "status": "success",
-                        "phone": phone_number
+                        "phone": phone_number,
+                        "ultravox_call_id": call_id
                     }
                     self.batch_status["completed"] += 1
                 except Exception as call_error:
@@ -261,9 +262,9 @@ class UltravoxCallManager:
         call_config = {
             "systemPrompt": system_prompt,
             "model": "fixie-ai/ultravox",
-            "voice": "Riya-Hindi-Urdu",
+            "voice": "Monika-English-Indian",
             "temperature": 0.3,
-            "firstSpeaker": "FIRST_SPEAKER_USER",
+            "firstSpeaker": "FIRST_SPEAKER_AGENT",
             "medium": {provider.lower(): {}},
             "recordingEnabled": True,
         }
@@ -278,11 +279,16 @@ class UltravoxCallManager:
                 json=call_config,
             )
             response.raise_for_status()
-            join_url = response.json().get("joinUrl")
+            response_data = response.json()
+            join_url = response_data.get("joinUrl")
+            call_id = response_data.get("callId")
+            
+            logger.info(f"Ultravox Call ID: {call_id}")
+            print(f"Ultravox Call ID: {call_id}")  # Also print to ensure visibility
 
             if not join_url:
                 raise gr.Error("Failed to create call")
-            return join_url
+            return join_url, call_id
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Ultravox API error: {str(e)}")
@@ -330,19 +336,21 @@ class UltravoxCallManager:
         system_prompt: str,
         country_code: str,
         phone_number: str
-    ) -> None:
+    ) -> str:
         """Initiate a single call through the specified provider."""
         formatted_number = PhoneNumberValidator.format_phone_number(
             country_code, phone_number
         )
 
         gr.Info("Creating Ultravox call...")
-        join_url = self._create_ultravox_call(system_prompt, provider)
+        join_url, call_id = self._create_ultravox_call(system_prompt, provider)
 
         if provider == "Twilio":
             self._initiate_twilio_call(join_url, formatted_number)
         elif provider == "Plivo":
             self._initiate_plivo_call(join_url, formatted_number)
+        
+        return call_id
 
 
 
@@ -584,9 +592,12 @@ class UltravoxInterface:
         )
 
         submit_btn_single.click(
-            fn=lambda prov, p, c, n: self.call_manager.initiate_call(
-                prov, p, get_country_code(c), n
-            ),
+            fn=lambda prov, p, c, n: (
+                call_id := self.call_manager.initiate_call(
+                    prov, p, get_country_code(c), n
+                ),
+                None  # Return None to not affect UI
+            )[1],
             inputs=[
                 provider_single, system_prompt_single,
                 country_code_single, phone_number_single
