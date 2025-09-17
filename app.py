@@ -521,6 +521,8 @@ class UltravoxInterface:
 
                     # Format the created timestamp
                     formatted_created = self.format_datetime(created)
+                    # Keep the raw created timestamp for sorting
+                    raw_created = created
 
                 else:
                     # Handle case where Ultravox API call failed
@@ -528,11 +530,13 @@ class UltravoxInterface:
                     end_reason = "API Error"
                     billed_duration = ""
                     short_summary = "Unable to fetch call details from Ultravox API"
+                    # Use database created_at as fallback for sorting
+                    raw_created = call.get('created_at', '')
 
                 # Generate clickable markdown link for Call ID
                 call_id_link = f"[{call_id}](https://app.ultravox.ai/calls/{call_id})"
 
-                # Add row to dashboard data
+                # Add row to dashboard data with raw timestamp for sorting
                 dashboard_data.append([
                     call_id_link,
                     candidate_name,
@@ -540,12 +544,20 @@ class UltravoxInterface:
                     formatted_created,
                     end_reason or "",
                     billed_duration or "",
-                    short_summary or ""
+                    short_summary or "",
+                    raw_created  # Hidden column for sorting
                 ])
 
-            return pd.DataFrame(dashboard_data, columns=[
-                "CALL ID", "CANDIDATE NAME", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SHORT SUMMARY"
+            # Create DataFrame with hidden sort column
+            df = pd.DataFrame(dashboard_data, columns=[
+                "CALL ID", "CANDIDATE NAME", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SHORT SUMMARY", "SORT_TIMESTAMP"
             ])
+
+            # Sort by actual call creation time (most recent first)
+            df = df.sort_values('SORT_TIMESTAMP', ascending=False)
+
+            # Remove the sort column before returning
+            return df.drop(columns=['SORT_TIMESTAMP'])
 
         except Exception as e:
             logger.error(f"Error refreshing call details: {e}")
