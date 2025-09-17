@@ -11,7 +11,11 @@ import re
 import time
 import threading
 import logging
+from datetime import datetime
+import pytz
+from supabase_client import SupabaseClient
 from assistants import (
+    INITIAL_SCREENING_AGENT,
     INTERVIEW_SCHEDULING_AGENT,
     INTERVIEW_SCREENING_AGENT,
     RESUME_UPDATE_AGENT,
@@ -30,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 ASSISTANT_TYPES = {
+    "Initial Screening Agent [Frontend Staff Engineer-RocketLane]": INITIAL_SCREENING_AGENT,
     "Interview Scheduling": INTERVIEW_SCHEDULING_AGENT,
     "Interview Screening": INTERVIEW_SCREENING_AGENT,
     "Resume Update": RESUME_UPDATE_AGENT,
@@ -158,10 +163,17 @@ class BatchProcessor:
                 phone_number = str(row['phone_number'])
                 country_code = str(row['country_code'])
 
+                # Extract candidate name if available
+                candidate_name = None
+                if 'name' in row.index:
+                    candidate_name = str(row['name']) if pd.notna(row['name']) else None
+
                 # Make the call
                 try:
+                    # Determine assistant type from the system prompt or use default
+                    assistant_type = "Batch Call"
                     call_id = self.call_manager.initiate_call(
-                        provider, personalized_prompt, country_code, phone_number
+                        provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name
                     )
                     result = {
                         "row": index + 1,
@@ -256,6 +268,11 @@ class UltravoxCallManager:
             "PLIVO_AUTH_TOKEN": os.getenv("PLIVO_AUTH_TOKEN"),
             "PLIVO_PHONE_NUMBER": os.getenv("PLIVO_PHONE_NUMBER"),
         }
+        try:
+            self.supabase_client = SupabaseClient()
+        except ValueError as e:
+            logger.warning(f"Supabase not configured: {e}")
+            self.supabase_client = None
 
     def _create_ultravox_call(self, system_prompt: str, provider: str) -> str:
         """Create a call via Ultravox API and return join URL."""
@@ -330,12 +347,29 @@ class UltravoxCallManager:
             logger.error(f"Plivo error: {str(e)}")
             raise gr.Error(str(e))
 
+    def fetch_call_details(self, call_id: str) -> Dict[str, Any]:
+        """Fetch call details from Ultravox API."""
+        try:
+            response = requests.get(
+                f"https://api.ultravox.ai/api/calls/{call_id}",
+                headers={
+                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
+                }
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching call details for {call_id}: {str(e)}")
+            return {}
+
     def initiate_call(
         self,
         provider: str,
         system_prompt: str,
         country_code: str,
-        phone_number: str
+        phone_number: str,
+        assistant_type: str = None,
+        candidate_name: str = None
     ) -> str:
         """Initiate a single call through the specified provider."""
         formatted_number = PhoneNumberValidator.format_phone_number(
@@ -345,11 +379,28 @@ class UltravoxCallManager:
         gr.Info("Creating Ultravox call...")
         join_url, call_id = self._create_ultravox_call(system_prompt, provider)
 
+        # Store call in Supabase
+        if self.supabase_client:
+            try:
+                call_data = {
+                    "call_id": call_id,
+                    "phone_number": formatted_number,
+                    "country_code": country_code,
+                    "provider": provider,
+                    "assistant_type": assistant_type or "Unknown",
+                    "candidate_name": candidate_name,
+                    "status": "initiated",
+                    "created_at": datetime.now().isoformat()
+                }
+                self.supabase_client.insert_call(call_data)
+            except Exception as e:
+                logger.error(f"Failed to store call in Supabase: {e}")
+
         if provider == "Twilio":
             self._initiate_twilio_call(join_url, formatted_number)
         elif provider == "Plivo":
             self._initiate_plivo_call(join_url, formatted_number)
-        
+
         return call_id
 
 
@@ -398,10 +449,12 @@ class UIComponentBuilder:
         elem_classes: str = "w-full border border-gray-300 p-2 rounded-lg"
     ) -> gr.TextArea:
         """Create system prompt textarea component."""
+        # Use the first item in ASSISTANT_TYPES (same as dropdown default)
+        default_prompt = list(ASSISTANT_TYPES.values())[0]
         return gr.TextArea(
             label=label,
             lines=8,
-            value=value or ASSISTANT_TYPES["Interview Scheduling"],
+            value=value or default_prompt,
             elem_classes=elem_classes
         )
 
@@ -432,6 +485,89 @@ class UltravoxInterface:
         except Exception as e:
             logger.error(f"CSV processing error: {str(e)}")
             return None, None
+
+    def refresh_call_details(self) -> pd.DataFrame:
+        """Refresh call details from Supabase and Ultravox API with full dashboard data."""
+        if not self.call_manager.supabase_client:
+            gr.Warning("Supabase not configured")
+            return pd.DataFrame()
+
+        try:
+            # Get all calls from Supabase
+            calls = self.call_manager.supabase_client.get_all_calls()
+
+            if not calls:
+                return pd.DataFrame()
+
+            # Always fetch fresh details from Ultravox API for ALL calls
+            dashboard_data = []
+
+            for call in calls:
+                call_id = call.get('call_id')
+                phone_number = call.get('phone_number', '')
+                candidate_name = call.get('candidate_name', '') or ''
+                if not call_id:
+                    continue
+
+                # Fetch complete details from Ultravox API
+                ultravox_details = self.call_manager.fetch_call_details(call_id)
+
+                if ultravox_details:
+                    # Extract the essential fields
+                    created = ultravox_details.get('created', '')
+                    end_reason = ultravox_details.get('endReason', '')
+                    billed_duration = ultravox_details.get('billedDuration', '')
+                    short_summary = ultravox_details.get('shortSummary', '')
+
+                    # Format the created timestamp
+                    formatted_created = self.format_datetime(created)
+
+                else:
+                    # Handle case where Ultravox API call failed
+                    formatted_created = self.format_datetime(call.get('created_at', ''))
+                    end_reason = "API Error"
+                    billed_duration = ""
+                    short_summary = "Unable to fetch call details from Ultravox API"
+
+                # Generate clickable markdown link for Call ID
+                call_id_link = f"[{call_id}](https://app.ultravox.ai/calls/{call_id})"
+
+                # Add row to dashboard data
+                dashboard_data.append([
+                    call_id_link,
+                    candidate_name,
+                    phone_number,
+                    formatted_created,
+                    end_reason or "",
+                    billed_duration or "",
+                    short_summary or ""
+                ])
+
+            return pd.DataFrame(dashboard_data, columns=[
+                "CALL ID", "CANDIDATE NAME", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SHORT SUMMARY"
+            ])
+
+        except Exception as e:
+            logger.error(f"Error refreshing call details: {e}")
+            gr.Error(f"Error refreshing calls: {str(e)}")
+            return pd.DataFrame()
+
+
+    def format_datetime(self, iso_string: str) -> str:
+        """Format ISO datetime string to IST readable format."""
+        if not iso_string:
+            return ""
+        try:
+            # Parse the UTC datetime
+            dt = datetime.fromisoformat(iso_string.replace('Z', '+00:00'))
+
+            # Convert to IST (UTC+5:30)
+            ist = pytz.timezone('Asia/Kolkata')
+            dt_ist = dt.astimezone(ist)
+
+            return dt_ist.strftime('%m/%d/%Y %I:%M%p IST')
+        except Exception:
+            return iso_string
 
 
     def create_interface(self) -> gr.Blocks:
@@ -550,6 +686,27 @@ class UltravoxInterface:
                         elem_classes="w-full"
                     )
 
+                # Call Details Tab
+                with gr.TabItem("Call Details"):
+                    gr.Markdown("### 📞 Call History & Details")
+
+                    with gr.Row():
+                        refresh_calls_btn = gr.Button(
+                            "🔄 Refresh Call Details",
+                            variant="primary",
+                            elem_classes="w-full"
+                        )
+
+                    calls_table = gr.DataFrame(
+                        label="Call History Dashboard",
+                        headers=["CALL ID", "CANDIDATE NAME", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SHORT SUMMARY"],
+                        datatype=["markdown", "str", "str", "str", "str", "str", "str"],
+                        elem_classes="w-full",
+                        column_widths=[250, 150, 130, 150, 120, 80, 300],
+                        max_height=600,
+                        wrap=True
+                    )
+
             self._setup_event_handlers(
                 # Single call components
                 assistant_type_single, system_prompt_single, provider_single,
@@ -559,7 +716,9 @@ class UltravoxInterface:
                 assistant_type_batch, system_prompt_batch, csv_file,
                 csv_columns_state, csv_preview, start_batch_btn,
                 provider_batch, call_delay, stop_batch_btn,
-                refresh_status_btn, batch_status, batch_results
+                refresh_status_btn, batch_status, batch_results,
+                # Call Details components
+                refresh_calls_btn, calls_table,
             )
 
         return interface
@@ -572,7 +731,8 @@ class UltravoxInterface:
             clear_btn_single, assistant_type_batch, system_prompt_batch,
             csv_file, csv_columns_state, csv_preview, start_batch_btn,
             provider_batch, call_delay, stop_batch_btn, refresh_status_btn,
-            batch_status, batch_results
+            batch_status, batch_results, refresh_calls_btn,
+            calls_table,
         ) = components
 
         def get_country_code(selection: str) -> str:
@@ -592,15 +752,15 @@ class UltravoxInterface:
         )
 
         submit_btn_single.click(
-            fn=lambda prov, p, c, n: (
+            fn=lambda prov, p, c, n, at: (
                 call_id := self.call_manager.initiate_call(
-                    prov, p, get_country_code(c), n
+                    prov, p, get_country_code(c), n, at
                 ),
                 None  # Return None to not affect UI
             )[1],
             inputs=[
                 provider_single, system_prompt_single,
-                country_code_single, phone_number_single
+                country_code_single, phone_number_single, assistant_type_single
             ],
             outputs=[],
         )
@@ -643,6 +803,13 @@ class UltravoxInterface:
             ),
             outputs=[batch_status, batch_results]
         )
+
+        # Call Details event handlers
+        refresh_calls_btn.click(
+            fn=self.refresh_call_details,
+            outputs=[calls_table]
+        )
+
 
 
 def main() -> None:
