@@ -2,3 +2,6 @@
 .env
 .gradio
 __pycache__
+database_migration.sql
+duplicate_app.py
+candidate_status_analyzer.py

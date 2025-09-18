@@ -388,6 +388,47 @@ class UltravoxCallManager:
             logger.error(f"Error fetching bulk call details: {str(e)}")
             return {"results": [], "total": 0}
 
+    def fetch_call_transcript(self, call_id: str) -> str:
+        """Fetch call transcript from Ultravox API."""
+        try:
+            response = requests.get(
+                f"https://api.ultravox.ai/api/calls/{call_id}/messages",
+                headers={
+                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
+                }
+            )
+            response.raise_for_status()
+            transcript_data = response.json()
+            
+            # Format the transcript from the results array
+            if 'results' in transcript_data and transcript_data['results']:
+                formatted_transcript = []
+                for message in transcript_data['results']:
+                    role = message.get('role', 'Unknown')
+                    text = message.get('text', '')
+                    if text.strip():
+                        # Skip system-generated phone greeting messages
+                        if text.strip() in ["(New Call) Respond as if you are answering the phone.", "Respond as if you are answering the phone."]:
+                            continue
+                            
+                        # Format role name
+                        if role == 'MESSAGE_ROLE_AGENT':
+                            speaker = 'Agent'
+                        elif role == 'MESSAGE_ROLE_USER':
+                            speaker = 'User'
+                        else:
+                            speaker = role.replace('MESSAGE_ROLE_', '').capitalize()
+                        
+                        formatted_transcript.append(f"{speaker}: {text}")
+                
+                return "\n\n".join(formatted_transcript) if formatted_transcript else "No transcript available"
+            else:
+                return "No transcript available"
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching transcript for {call_id}: {str(e)}")
+            return "Transcript not available"
+
     def initiate_call(
         self,
         provider: str,
@@ -592,6 +633,20 @@ class UltravoxInterface:
                 else:
                     summary_display = "No summary"
 
+                # Create View button for transcript
+                transcript_display = ""
+                if ultravox_details and end_reason not in ["Not Found"]:
+                    # Fetch transcript for this call
+                    transcript = self.call_manager.fetch_call_transcript(call_id)
+                    if transcript and transcript.strip() and transcript not in ["No transcript available", "Transcript not available"]:
+                        # Escape special characters for JavaScript
+                        escaped_transcript = transcript.replace("\\", "\\\\").replace("`", "\\`").replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+                        transcript_display = f'<button onclick="showTranscript(\'{call_id}\', \'{escaped_transcript}\')" style="background-color: #10b981; color: white; padding: 4px 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">View</button>'
+                    else:
+                        transcript_display = "No transcript"
+                else:
+                    transcript_display = "Not available"
+
                 # Add row to dashboard data with raw timestamp for sorting
                 dashboard_data.append([
                     call_id_link,
@@ -603,13 +658,14 @@ class UltravoxInterface:
                     end_reason or "",
                     billed_duration or "",
                     summary_display,
+                    transcript_display,
                     short_summary or "",
                     raw_created  # Hidden column for sorting
                 ])
 
             # Create DataFrame with hidden sort column
             df = pd.DataFrame(dashboard_data, columns=[
-                "CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "SHORT SUMMARY", "SORT_TIMESTAMP"
+                "CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "TRANSCRIPT", "SHORT SUMMARY", "SORT_TIMESTAMP"
             ])
 
             # Sort by actual call creation time (most recent first)
@@ -664,6 +720,110 @@ class UltravoxInterface:
             return self.refresh_call_details(self.current_page + 1)
         return self.refresh_call_details(self.current_page)
 
+    def export_calls_to_csv(self) -> Tuple[str, str]:
+        """Export all calls data to CSV file for download."""
+        if not self.call_manager.supabase_client:
+            return "⚠️ Supabase not configured - cannot export data", None
+
+        try:
+            # Get all calls from Supabase
+            calls = self.call_manager.supabase_client.get_all_calls()
+
+            if not calls:
+                return "⚠️ No calls found to export", None
+
+            # Fetch all call details from Ultravox API in bulk
+            ultravox_bulk_data = self.call_manager.fetch_all_calls_bulk(limit=500)
+            ultravox_calls = ultravox_bulk_data.get('results', [])
+            
+            # Create a lookup dict for faster access
+            ultravox_lookup = {call.get('callId'): call for call in ultravox_calls}
+
+            export_data = []
+
+            for call in calls:
+                call_id = call.get('call_id')
+                phone_number = call.get('phone_number', '')
+                candidate_name = call.get('candidate_name', '') or ''
+                position = call.get('position', '') or ''
+                company = call.get('company', '') or ''
+                assistant_type = call.get('assistant_type', '') or ''
+                provider = call.get('provider', '') or ''
+                
+                if not call_id:
+                    continue
+
+                # Get details from bulk data lookup
+                ultravox_details = ultravox_lookup.get(call_id)
+
+                if ultravox_details:
+                    # Extract the essential fields
+                    created = ultravox_details.get('created', '')
+                    end_reason = ultravox_details.get('endReason', '')
+                    billed_duration = ultravox_details.get('billedDuration', '')
+                    summary = ultravox_details.get('summary', '')
+                    short_summary = ultravox_details.get('shortSummary', '')
+
+                    # Format the created timestamp for CSV
+                    formatted_created = self.format_datetime(created)
+                    
+                    # Fetch transcript for export
+                    transcript = self.call_manager.fetch_call_transcript(call_id)
+                    if transcript in ["No transcript available", "Transcript not available"]:
+                        transcript = ""
+
+                else:
+                    # Handle case where call not found in bulk data
+                    formatted_created = self.format_datetime(call.get('created_at', ''))
+                    end_reason = "Not Found"
+                    billed_duration = ""
+                    short_summary = "Call not found in Ultravox API"
+                    summary = "Call not found in Ultravox API"
+                    transcript = ""
+
+                # Add row to export data
+                export_data.append({
+                    "Call ID": call_id,
+                    "Candidate Name": candidate_name,
+                    "Position": position,
+                    "Company": company,
+                    "Phone Number": phone_number,
+                    "Created": formatted_created,
+                    "End Reason": end_reason,
+                    "Duration": billed_duration,
+                    "Assistant Type": assistant_type,
+                    "Provider": provider,
+                    "Summary": summary,
+                    "Short Summary": short_summary,
+                    "Transcript": transcript
+                })
+
+            # Create DataFrame and export to CSV
+            import pandas as pd
+            from datetime import datetime
+            import tempfile
+            import os
+            
+            df = pd.DataFrame(export_data)
+            
+            # Sort by creation time (most recent first)
+            df = df.sort_values('Created', ascending=False)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"ultravox_calls_export_{timestamp}.csv"
+            
+            # Save to temporary file
+            temp_dir = tempfile.gettempdir()
+            file_path = os.path.join(temp_dir, filename)
+            df.to_csv(file_path, index=False, encoding='utf-8')
+            
+            return f"✅ Successfully exported {len(df)} calls", file_path
+
+        except Exception as e:
+            logger.error(f"Error exporting calls to CSV: {e}")
+            return f"❌ Error exporting calls: {str(e)}", None
+
 
     def format_datetime(self, iso_string: str) -> str:
         """Format ISO datetime string to IST readable format."""
@@ -687,6 +847,14 @@ class UltravoxInterface:
         with gr.Blocks(theme="soft", head="""
         <script>
         function showSummary(callId, summary) {
+            showModal('Call Summary', callId, summary);
+        }
+        
+        function showTranscript(callId, transcript) {
+            showModal('Call Transcript', callId, transcript);
+        }
+        
+        function showModal(type, callId, content) {
             // Create modal overlay
             const overlay = document.createElement('div');
             overlay.style.cssText = `
@@ -732,18 +900,18 @@ class UltravoxInterface:
             
             // Create title
             const title = document.createElement('h3');
-            title.textContent = 'Call Summary - ' + callId;
+            title.textContent = type + ' - ' + callId;
             title.style.cssText = 'margin-top: 0; margin-bottom: 15px; color: #333;';
             
-            // Create summary content
-            const content = document.createElement('div');
-            content.textContent = summary;
-            content.style.cssText = `
+            // Create content
+            const contentDiv = document.createElement('div');
+            contentDiv.textContent = content;
+            contentDiv.style.cssText = `
                 white-space: pre-wrap;
                 line-height: 1.5;
                 color: #555;
-                max-height: 400px;
-                overflow-y: auto;
+                height: 400px;
+                overflow-y: scroll;
                 padding: 10px;
                 background-color: #f9f9f9;
                 border-radius: 5px;
@@ -753,7 +921,7 @@ class UltravoxInterface:
             // Assemble modal
             modal.appendChild(closeBtn);
             modal.appendChild(title);
-            modal.appendChild(content);
+            modal.appendChild(contentDiv);
             overlay.appendChild(modal);
             
             // Add to document
@@ -889,15 +1057,34 @@ class UltravoxInterface:
                         refresh_calls_btn = gr.Button(
                             "🔄 Refresh Call History",
                             variant="primary",
-                            elem_classes="w-full"
+                            elem_classes="w-1/2"
                         )
+                        export_csv_btn = gr.Button(
+                            "📥 Export to CSV",
+                            variant="secondary",
+                            elem_classes="w-1/2"
+                        )
+                    
+                    export_status = gr.Textbox(
+                        label="Export Status",
+                        value="",
+                        visible=False,
+                        interactive=False,
+                        elem_classes="w-full"
+                    )
+                    
+                    download_file = gr.File(
+                        label="Download CSV",
+                        visible=False,
+                        elem_classes="w-full"
+                    )
 
                     calls_table = gr.DataFrame(
                         label="Call History Dashboard",
-                        headers=["CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "SHORT SUMMARY"],
-                        datatype=["markdown", "str", "str", "str", "str", "str", "str", "str", "html", "str"],
+                        headers=["CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "TRANSCRIPT", "SHORT SUMMARY"],
+                        datatype=["markdown", "str", "str", "str", "str", "str", "str", "str", "html", "html", "str"],
                         elem_classes="w-full",
-                        column_widths=[200, 120, 120, 120, 120, 130, 120, 80, 100, 250],
+                        column_widths=[200, 120, 120, 120, 120, 130, 120, 80, 100, 100, 250],
                         max_height=600,
                         wrap=True
                     )
@@ -932,7 +1119,7 @@ class UltravoxInterface:
                 provider_batch, call_delay, stop_batch_btn,
                 refresh_status_btn, batch_status, batch_results,
                 # Call Details components
-                refresh_calls_btn, calls_table, prev_btn, next_btn, pagination_info,
+                refresh_calls_btn, export_csv_btn, export_status, download_file, calls_table, prev_btn, next_btn, pagination_info,
             )
 
         return interface
@@ -945,8 +1132,8 @@ class UltravoxInterface:
             clear_btn_single, assistant_type_batch, system_prompt_batch,
             csv_file, csv_columns_state, csv_preview, start_batch_btn,
             provider_batch, call_delay, stop_batch_btn, refresh_status_btn,
-            batch_status, batch_results, refresh_calls_btn,
-            calls_table, prev_btn, next_btn, pagination_info,
+            batch_status, batch_results, refresh_calls_btn, export_csv_btn,
+            export_status, download_file, calls_table, prev_btn, next_btn, pagination_info,
         ) = components
 
         def get_country_code(selection: str) -> str:
@@ -1022,6 +1209,27 @@ class UltravoxInterface:
         refresh_calls_btn.click(
             fn=self.refresh_call_details,
             outputs=[calls_table, pagination_info]
+        )
+
+        # Export CSV event handler  
+        def handle_export():
+            status, file_path = self.export_calls_to_csv()
+            if file_path:
+                return (
+                    status,
+                    gr.update(visible=True),
+                    gr.update(value=file_path, visible=True)
+                )
+            else:
+                return (
+                    status,
+                    gr.update(visible=True),
+                    gr.update(visible=False)
+                )
+
+        export_csv_btn.click(
+            fn=handle_export,
+            outputs=[export_status, export_status, download_file]
         )
 
         # Pagination event handlers
