@@ -163,17 +163,24 @@ class BatchProcessor:
                 phone_number = str(row['phone_number'])
                 country_code = str(row['country_code'])
 
-                # Extract candidate name if available
+                # Extract candidate details if available
                 candidate_name = None
+                position = None
+                company = None
+
                 if 'name' in row.index:
                     candidate_name = str(row['name']) if pd.notna(row['name']) else None
+                if 'position' in row.index:
+                    position = str(row['position']) if pd.notna(row['position']) else None
+                if 'company' in row.index:
+                    company = str(row['company']) if pd.notna(row['company']) else None
 
                 # Make the call
                 try:
                     # Determine assistant type from the system prompt or use default
                     assistant_type = "Batch Call"
                     call_id = self.call_manager.initiate_call(
-                        provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name
+                        provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name, position, company
                     )
                     result = {
                         "row": index + 1,
@@ -369,7 +376,9 @@ class UltravoxCallManager:
         country_code: str,
         phone_number: str,
         assistant_type: str = None,
-        candidate_name: str = None
+        candidate_name: str = None,
+        position: str = None,
+        company: str = None
     ) -> str:
         """Initiate a single call through the specified provider."""
         formatted_number = PhoneNumberValidator.format_phone_number(
@@ -389,6 +398,8 @@ class UltravoxCallManager:
                     "provider": provider,
                     "assistant_type": assistant_type or "Unknown",
                     "candidate_name": candidate_name,
+                    "position": position,
+                    "company": company,
                     "status": "initiated",
                     "created_at": datetime.now().isoformat()
                 }
@@ -466,6 +477,9 @@ class UltravoxInterface:
         self.call_manager = UltravoxCallManager()
         self.batch_processor = BatchProcessor(self.call_manager)
         self.csv_data: Optional[pd.DataFrame] = None
+        self.calls_per_page = 10
+        self.current_page = 1
+        self.total_calls = 0
 
     def update_prompt(self, selected_type: str) -> str:
         """Update system prompt based on selected assistant type."""
@@ -486,18 +500,22 @@ class UltravoxInterface:
             logger.error(f"CSV processing error: {str(e)}")
             return None, None
 
-    def refresh_call_details(self) -> pd.DataFrame:
-        """Refresh call details from Supabase and Ultravox API with full dashboard data."""
+    def refresh_call_details(self, page: int = None) -> Tuple[pd.DataFrame, str]:
+        """Refresh call details from Supabase and Ultravox API with pagination."""
         if not self.call_manager.supabase_client:
             gr.Warning("Supabase not configured")
-            return pd.DataFrame()
+            return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
+
+        if page is not None:
+            self.current_page = page
 
         try:
             # Get all calls from Supabase
             calls = self.call_manager.supabase_client.get_all_calls()
 
             if not calls:
-                return pd.DataFrame()
+                self.total_calls = 0
+                return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
 
             # Always fetch fresh details from Ultravox API for ALL calls
             dashboard_data = []
@@ -506,6 +524,8 @@ class UltravoxInterface:
                 call_id = call.get('call_id')
                 phone_number = call.get('phone_number', '')
                 candidate_name = call.get('candidate_name', '') or ''
+                position = call.get('position', '') or ''
+                company = call.get('company', '') or ''
                 if not call_id:
                     continue
 
@@ -517,6 +537,7 @@ class UltravoxInterface:
                     created = ultravox_details.get('created', '')
                     end_reason = ultravox_details.get('endReason', '')
                     billed_duration = ultravox_details.get('billedDuration', '')
+                    summary = ultravox_details.get('summary', '')
                     short_summary = ultravox_details.get('shortSummary', '')
 
                     # Format the created timestamp
@@ -530,39 +551,93 @@ class UltravoxInterface:
                     end_reason = "API Error"
                     billed_duration = ""
                     short_summary = "Unable to fetch call details from Ultravox API"
+                    summary = "Unable to fetch call details from Ultravox API"
                     # Use database created_at as fallback for sorting
                     raw_created = call.get('created_at', '')
 
                 # Generate clickable markdown link for Call ID
                 call_id_link = f"[{call_id}](https://app.ultravox.ai/calls/{call_id})"
 
+                # Create View button for summary if summary exists
+                summary_display = ""
+                if summary and summary.strip() and summary != "Unable to fetch call details from Ultravox API":
+                    # Escape special characters for JavaScript
+                    escaped_summary = summary.replace("\\", "\\\\").replace("`", "\\`").replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+                    summary_display = f'<button onclick="showSummary(\'{call_id}\', \'{escaped_summary}\')" style="background-color: #3b82f6; color: white; padding: 4px 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">View</button>'
+                else:
+                    summary_display = "No summary"
+
                 # Add row to dashboard data with raw timestamp for sorting
                 dashboard_data.append([
                     call_id_link,
                     candidate_name,
+                    position,
+                    company,
                     phone_number,
                     formatted_created,
                     end_reason or "",
                     billed_duration or "",
+                    summary_display,
                     short_summary or "",
                     raw_created  # Hidden column for sorting
                 ])
 
             # Create DataFrame with hidden sort column
             df = pd.DataFrame(dashboard_data, columns=[
-                "CALL ID", "CANDIDATE NAME", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SHORT SUMMARY", "SORT_TIMESTAMP"
+                "CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "SHORT SUMMARY", "SORT_TIMESTAMP"
             ])
 
             # Sort by actual call creation time (most recent first)
             df = df.sort_values('SORT_TIMESTAMP', ascending=False)
 
+            # Update total calls count
+            self.total_calls = len(df)
+
+            # Calculate pagination
+            total_pages = (self.total_calls + self.calls_per_page - 1) // self.calls_per_page
+            if total_pages == 0:
+                total_pages = 1
+
+            # Ensure current page is within bounds
+            if self.current_page < 1:
+                self.current_page = 1
+            elif self.current_page > total_pages:
+                self.current_page = total_pages
+
+            # Apply pagination
+            start_idx = (self.current_page - 1) * self.calls_per_page
+            end_idx = start_idx + self.calls_per_page
+            paginated_df = df.iloc[start_idx:end_idx]
+
             # Remove the sort column before returning
-            return df.drop(columns=['SORT_TIMESTAMP'])
+            paginated_df = paginated_df.drop(columns=['SORT_TIMESTAMP'])
+
+            # Create pagination info
+            pagination_info = f"Page {self.current_page} of {total_pages} ( Total available calls : {self.total_calls})"
+
+            return paginated_df, pagination_info
 
         except Exception as e:
             logger.error(f"Error refreshing call details: {e}")
             gr.Error(f"Error refreshing calls: {str(e)}")
-            return pd.DataFrame()
+            return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
+
+    def navigate_to_page(self, page_number: int) -> Tuple[pd.DataFrame, str]:
+        """Navigate to a specific page."""
+        return self.refresh_call_details(page_number)
+
+    def go_to_previous_page(self) -> Tuple[pd.DataFrame, str]:
+        """Go to the previous page."""
+        if self.current_page > 1:
+            return self.refresh_call_details(self.current_page - 1)
+        return self.refresh_call_details(self.current_page)
+
+    def go_to_next_page(self) -> Tuple[pd.DataFrame, str]:
+        """Go to the next page."""
+        total_pages = (self.total_calls + self.calls_per_page - 1) // self.calls_per_page
+        if self.current_page < total_pages:
+            return self.refresh_call_details(self.current_page + 1)
+        return self.refresh_call_details(self.current_page)
 
 
     def format_datetime(self, iso_string: str) -> str:
@@ -584,7 +659,90 @@ class UltravoxInterface:
 
     def create_interface(self) -> gr.Blocks:
         """Create the main Gradio interface."""
-        with gr.Blocks(theme="soft") as interface:
+        with gr.Blocks(theme="soft", head="""
+        <script>
+        function showSummary(callId, summary) {
+            // Create modal overlay
+            const overlay = document.createElement('div');
+            overlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0, 0, 0, 0.5);
+                z-index: 1000;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            `;
+            
+            // Create modal content
+            const modal = document.createElement('div');
+            modal.style.cssText = `
+                background: white;
+                padding: 20px;
+                border-radius: 10px;
+                max-width: 80%;
+                max-height: 80%;
+                overflow-y: auto;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                position: relative;
+            `;
+            
+            // Create close button
+            const closeBtn = document.createElement('button');
+            closeBtn.innerHTML = '×';
+            closeBtn.style.cssText = `
+                position: absolute;
+                top: 10px;
+                right: 15px;
+                background: none;
+                border: none;
+                font-size: 24px;
+                cursor: pointer;
+                color: #666;
+            `;
+            closeBtn.onclick = () => document.body.removeChild(overlay);
+            
+            // Create title
+            const title = document.createElement('h3');
+            title.textContent = 'Call Summary - ' + callId;
+            title.style.cssText = 'margin-top: 0; margin-bottom: 15px; color: #333;';
+            
+            // Create summary content
+            const content = document.createElement('div');
+            content.textContent = summary;
+            content.style.cssText = `
+                white-space: pre-wrap;
+                line-height: 1.5;
+                color: #555;
+                max-height: 400px;
+                overflow-y: auto;
+                padding: 10px;
+                background-color: #f9f9f9;
+                border-radius: 5px;
+                border: 1px solid #e0e0e0;
+            `;
+            
+            // Assemble modal
+            modal.appendChild(closeBtn);
+            modal.appendChild(title);
+            modal.appendChild(content);
+            overlay.appendChild(modal);
+            
+            // Add to document
+            document.body.appendChild(overlay);
+            
+            // Close on overlay click
+            overlay.onclick = (e) => {
+                if (e.target === overlay) {
+                    document.body.removeChild(overlay);
+                }
+            };
+        }
+        </script>
+        """) as interface:
             gr.Markdown(
                 "# 📞 Ultravox Call Manager",
                 elem_classes="text-3xl font-bold text-center"
@@ -699,25 +857,44 @@ class UltravoxInterface:
                     )
 
                 # Call Details Tab
-                with gr.TabItem("Call Details"):
-                    gr.Markdown("### 📞 Call History & Details")
+                with gr.TabItem("Call History"):
+                    gr.Markdown("### 📞 Call History")
 
                     with gr.Row():
                         refresh_calls_btn = gr.Button(
-                            "🔄 Refresh Call Details",
+                            "🔄 Refresh Call History",
                             variant="primary",
                             elem_classes="w-full"
                         )
 
                     calls_table = gr.DataFrame(
                         label="Call History Dashboard",
-                        headers=["CALL ID", "CANDIDATE NAME", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SHORT SUMMARY"],
-                        datatype=["markdown", "str", "str", "str", "str", "str", "str"],
+                        headers=["CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "SHORT SUMMARY"],
+                        datatype=["markdown", "str", "str", "str", "str", "str", "str", "str", "html", "str"],
                         elem_classes="w-full",
-                        column_widths=[250, 150, 130, 150, 120, 80, 300],
+                        column_widths=[200, 120, 120, 120, 120, 130, 120, 80, 100, 250],
                         max_height=600,
                         wrap=True
                     )
+
+                    # Pagination controls at bottom
+                    with gr.Row():
+                        prev_btn = gr.Button(
+                            "⬅️ Previous",
+                            variant="secondary",
+                            elem_classes="w-1/4"
+                        )
+                        pagination_info = gr.Textbox(
+                            label="",
+                            value="Click Refresh call details to fetch call logs",
+                            interactive=False,
+                            elem_classes="w-1/2 text-center"
+                        )
+                        next_btn = gr.Button(
+                            "Next ➡️",
+                            variant="secondary",
+                            elem_classes="w-1/4"
+                        )
 
             self._setup_event_handlers(
                 # Single call components
@@ -730,7 +907,7 @@ class UltravoxInterface:
                 provider_batch, call_delay, stop_batch_btn,
                 refresh_status_btn, batch_status, batch_results,
                 # Call Details components
-                refresh_calls_btn, calls_table,
+                refresh_calls_btn, calls_table, prev_btn, next_btn, pagination_info,
             )
 
         return interface
@@ -744,7 +921,7 @@ class UltravoxInterface:
             csv_file, csv_columns_state, csv_preview, start_batch_btn,
             provider_batch, call_delay, stop_batch_btn, refresh_status_btn,
             batch_status, batch_results, refresh_calls_btn,
-            calls_table,
+            calls_table, prev_btn, next_btn, pagination_info,
         ) = components
 
         def get_country_code(selection: str) -> str:
@@ -819,7 +996,18 @@ class UltravoxInterface:
         # Call Details event handlers
         refresh_calls_btn.click(
             fn=self.refresh_call_details,
-            outputs=[calls_table]
+            outputs=[calls_table, pagination_info]
+        )
+
+        # Pagination event handlers
+        prev_btn.click(
+            fn=self.go_to_previous_page,
+            outputs=[calls_table, pagination_info]
+        )
+
+        next_btn.click(
+            fn=self.go_to_next_page,
+            outputs=[calls_table, pagination_info]
         )
 
 
