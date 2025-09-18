@@ -371,6 +371,23 @@ class UltravoxCallManager:
             logger.error(f"Error fetching call details for {call_id}: {str(e)}")
             return {}
 
+    def fetch_all_calls_bulk(self, limit: int = 100) -> Dict[str, Any]:
+        """Fetch all calls from Ultravox API in bulk."""
+        try:
+            params = {"limit": limit}
+            response = requests.get(
+                "https://api.ultravox.ai/api/calls",
+                headers={
+                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
+                },
+                params=params
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching bulk call details: {str(e)}")
+            return {"results": [], "total": 0}
+
     def initiate_call(
         self,
         provider: str,
@@ -519,7 +536,13 @@ class UltravoxInterface:
                 self.total_calls = 0
                 return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
 
-            # Always fetch fresh details from Ultravox API for ALL calls
+            # Fetch all call details from Ultravox API in bulk
+            ultravox_bulk_data = self.call_manager.fetch_all_calls_bulk(limit=500)
+            ultravox_calls = ultravox_bulk_data.get('results', [])
+            
+            # Create a lookup dict for faster access
+            ultravox_lookup = {call.get('callId'): call for call in ultravox_calls}
+
             dashboard_data = []
 
             for call in calls:
@@ -531,8 +554,8 @@ class UltravoxInterface:
                 if not call_id:
                     continue
 
-                # Fetch complete details from Ultravox API
-                ultravox_details = self.call_manager.fetch_call_details(call_id)
+                # Get details from bulk data lookup
+                ultravox_details = ultravox_lookup.get(call_id)
 
                 if ultravox_details:
                     # Extract the essential fields
@@ -548,12 +571,12 @@ class UltravoxInterface:
                     raw_created = created
 
                 else:
-                    # Handle case where Ultravox API call failed
+                    # Handle case where call not found in bulk data
                     formatted_created = self.format_datetime(call.get('created_at', ''))
-                    end_reason = "API Error"
+                    end_reason = "Not Found"
                     billed_duration = ""
-                    short_summary = "Unable to fetch call details from Ultravox API"
-                    summary = "Unable to fetch call details from Ultravox API"
+                    short_summary = "Call not found in Ultravox API"
+                    summary = "Call not found in Ultravox API"
                     # Use database created_at as fallback for sorting
                     raw_created = call.get('created_at', '')
 
@@ -562,7 +585,7 @@ class UltravoxInterface:
 
                 # Create View button for summary if summary exists
                 summary_display = ""
-                if summary and summary.strip() and summary != "Unable to fetch call details from Ultravox API":
+                if summary and summary.strip() and summary != "Call not found in Ultravox API":
                     # Escape special characters for JavaScript
                     escaped_summary = summary.replace("\\", "\\\\").replace("`", "\\`").replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
                     summary_display = f'<button onclick="showSummary(\'{call_id}\', \'{escaped_summary}\')" style="background-color: #3b82f6; color: white; padding: 4px 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">View</button>'
