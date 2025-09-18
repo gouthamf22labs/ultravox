@@ -1211,7 +1211,14 @@ class UltravoxInterface:
             outputs=[calls_table, pagination_info]
         )
 
-        # Export CSV event handler  
+        # Export CSV event handler with loading state
+        def show_export_loading():
+            return (
+                "🔄 Exporting calls data... Please wait",
+                gr.update(visible=True),
+                gr.update(visible=False)
+            )
+        
         def handle_export():
             status, file_path = self.export_calls_to_csv()
             if file_path:
@@ -1228,6 +1235,9 @@ class UltravoxInterface:
                 )
 
         export_csv_btn.click(
+            fn=show_export_loading,
+            outputs=[export_status, export_status, download_file]
+        ).then(
             fn=handle_export,
             outputs=[export_status, export_status, download_file]
         )
