@@ -295,7 +295,15 @@ class UltravoxCallManager:
             "recordingEnabled": True,
             "vadSettings": {
             "turnEndpointDelay": "1.00s"   
+            },
+            "selectedTools": [
+            {
+            "toolName": "hangUp",
+            "parameterOverrides": {
+                "strict": False
             }
+            }
+        ]
         }
 
         try:
