@@ -382,22 +382,66 @@ class UltravoxCallManager:
             logger.error(f"Error fetching call details for {call_id}: {str(e)}")
             return {}
 
-    def fetch_all_calls_bulk(self, limit: int = 100) -> Dict[str, Any]:
-        """Fetch all calls from Ultravox API in bulk."""
+    def fetch_calls_page(self, page_size: int = 20, cursor: str = None) -> Dict[str, Any]:
+        """Fetch a single page of calls from Ultravox API."""
         try:
-            params = {"limit": limit}
+            # Build request parameters
+            params = {"pageSize": page_size}
+            if cursor:
+                params["cursor"] = cursor
+
+            logger.info(f"Fetching single page: pageSize={page_size}, cursor={cursor[:20] if cursor else 'None'}")
+
             response = requests.get(
                 "https://api.ultravox.ai/api/calls",
-                headers={
-                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
-                },
-                params=params
+                headers={"X-API-Key": self.env_vars["ULTRAVOX_API_KEY"]},
+                params=params,
+                timeout=30
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+
+            results = data.get('results', [])
+            total = data.get('total', 0)
+            next_cursor = None
+            prev_cursor = None
+
+            # Extract cursors from next/previous URLs if they exist
+            next_url = data.get('next')
+            if next_url:
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(next_url)
+                query_params = parse_qs(parsed.query)
+                next_cursor = query_params.get('cursor', [None])[0]
+
+            prev_url = data.get('previous')
+            if prev_url:
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(prev_url)
+                query_params = parse_qs(parsed.query)
+                prev_cursor = query_params.get('cursor', [None])[0]
+
+            logger.info(f"Page fetched: {len(results)} calls, total available: {total}")
+
+            return {
+                "results": results,
+                "total": total,
+                "next_cursor": next_cursor,
+                "prev_cursor": prev_cursor,
+                "has_next": next_cursor is not None,
+                "has_prev": prev_cursor is not None
+            }
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching bulk call details: {str(e)}")
-            return {"results": [], "total": 0}
+            logger.error(f"Error fetching calls page: {str(e)}")
+            return {
+                "results": [],
+                "total": 0,
+                "next_cursor": None,
+                "prev_cursor": None,
+                "has_next": False,
+                "has_prev": False
+            }
 
     def fetch_call_transcript(self, call_id: str) -> str:
         """Fetch call transcript from Ultravox API."""
@@ -548,9 +592,13 @@ class UltravoxInterface:
         self.call_manager = UltravoxCallManager()
         self.batch_processor = BatchProcessor(self.call_manager)
         self.csv_data: Optional[pd.DataFrame] = None
-        self.calls_per_page = 10
+        self.calls_per_page = 20  # Match API page size
         self.current_page = 1
         self.total_calls = 0
+        self.current_cursor = None
+        self.next_cursor = None
+        self.prev_cursor = None
+        self.page_cursors = {}  # Track cursors for each page
 
     def update_prompt(self, selected_type: str) -> str:
         """Update system prompt based on selected assistant type."""
@@ -571,73 +619,75 @@ class UltravoxInterface:
             logger.error(f"CSV processing error: {str(e)}")
             return None, None
 
-    def refresh_call_details(self, page: int = None) -> Tuple[pd.DataFrame, str]:
-        """Refresh call details from Supabase and Ultravox API with pagination."""
-        if not self.call_manager.supabase_client:
-            gr.Warning("Supabase not configured")
-            return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
-
-        if page is not None:
-            self.current_page = page
-
+    def refresh_call_details(self, direction: str = "refresh") -> Tuple[pd.DataFrame, str]:
+        """Refresh call details using cursor-based pagination from Ultravox API."""
         try:
-            # Get all calls from Supabase
-            calls = self.call_manager.supabase_client.get_all_calls()
+            # Determine which cursor to use based on direction
+            if direction == "refresh":
+                cursor = None  # Start from beginning
+                self.current_page = 1
+                self.page_cursors = {}
+            elif direction == "next":
+                cursor = self.next_cursor
+                self.current_page += 1
+            elif direction == "prev":
+                cursor = self.prev_cursor
+                self.current_page -= 1
+            else:
+                cursor = self.current_cursor
 
-            if not calls:
-                self.total_calls = 0
-                return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
+            # Fetch current page from Ultravox API
+            page_data = self.call_manager.fetch_calls_page(page_size=self.calls_per_page, cursor=cursor)
+            ultravox_calls = page_data.get('results', [])
+            self.total_calls = page_data.get('total', 0)
 
-            # Fetch all call details from Ultravox API in bulk
-            ultravox_bulk_data = self.call_manager.fetch_all_calls_bulk(limit=500)
-            ultravox_calls = ultravox_bulk_data.get('results', [])
-            
-            # Create a lookup dict for faster access
-            ultravox_lookup = {call.get('callId'): call for call in ultravox_calls}
+            # Update cursor tracking
+            self.current_cursor = cursor
+            self.next_cursor = page_data.get('next_cursor')
+            self.prev_cursor = page_data.get('prev_cursor')
+            self.page_cursors[self.current_page] = cursor
 
+            # Build dashboard data from current page
             dashboard_data = []
 
-            for call in calls:
-                call_id = call.get('call_id')
-                phone_number = call.get('phone_number', '')
-                candidate_name = call.get('candidate_name', '') or ''
-                position = call.get('position', '') or ''
-                company = call.get('company', '') or ''
+            for ultravox_call in ultravox_calls:
+                call_id = ultravox_call.get('callId')
                 if not call_id:
                     continue
 
-                # Get details from bulk data lookup
-                ultravox_details = ultravox_lookup.get(call_id)
+                # Extract data from Ultravox API response
+                created = ultravox_call.get('created', '')
+                end_reason = ultravox_call.get('endReason', '')
+                billed_duration = ultravox_call.get('billedDuration', '')
+                summary = ultravox_call.get('summary', '')
+                short_summary = ultravox_call.get('shortSummary', '')
 
-                if ultravox_details:
-                    # Extract the essential fields
-                    created = ultravox_details.get('created', '')
-                    end_reason = ultravox_details.get('endReason', '')
-                    billed_duration = ultravox_details.get('billedDuration', '')
-                    summary = ultravox_details.get('summary', '')
-                    short_summary = ultravox_details.get('shortSummary', '')
+                # Try to get additional details from Supabase if available
+                phone_number = ""
+                candidate_name = ""
+                position = ""
+                company = ""
 
-                    # Format the created timestamp
-                    formatted_created = self.format_datetime(created)
-                    # Keep the raw created timestamp for sorting
-                    raw_created = created
+                if self.call_manager.supabase_client:
+                    try:
+                        supabase_call = self.call_manager.supabase_client.get_call_by_id(call_id)
+                        if supabase_call:
+                            phone_number = supabase_call.get('phone_number', '')
+                            candidate_name = supabase_call.get('candidate_name', '') or ''
+                            position = supabase_call.get('position', '') or ''
+                            company = supabase_call.get('company', '') or ''
+                    except Exception as e:
+                        logger.warning(f"Could not fetch Supabase data for {call_id}: {e}")
 
-                else:
-                    # Handle case where call not found in bulk data
-                    formatted_created = self.format_datetime(call.get('created_at', ''))
-                    end_reason = "Not Found"
-                    billed_duration = ""
-                    short_summary = "Call not found in Ultravox API"
-                    summary = "Call not found in Ultravox API"
-                    # Use database created_at as fallback for sorting
-                    raw_created = call.get('created_at', '')
+                # Format the created timestamp
+                formatted_created = self.format_datetime(created)
 
                 # Generate clickable markdown link for Call ID
                 call_id_link = f"[{call_id}](https://app.ultravox.ai/calls/{call_id})"
 
                 # Create View button for summary if summary exists
                 summary_display = ""
-                if summary and summary.strip() and summary != "Call not found in Ultravox API":
+                if summary and summary.strip():
                     # Escape special characters for JavaScript
                     escaped_summary = summary.replace("\\", "\\\\").replace("`", "\\`").replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
                     summary_display = f'<button onclick="showSummary(\'{call_id}\', \'{escaped_summary}\')" style="background-color: #3b82f6; color: white; padding: 4px 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">View</button>'
@@ -646,7 +696,7 @@ class UltravoxInterface:
 
                 # Create View button for transcript
                 transcript_display = ""
-                if ultravox_details and end_reason not in ["Not Found"]:
+                if end_reason not in ["Not Found", ""]:
                     # Fetch transcript for this call
                     transcript = self.call_manager.fetch_call_transcript(call_id)
                     if transcript and transcript.strip() and transcript not in ["No transcript available", "Transcript not available"]:
@@ -658,7 +708,7 @@ class UltravoxInterface:
                 else:
                     transcript_display = "Not available"
 
-                # Add row to dashboard data with raw timestamp for sorting
+                # Add row to dashboard data
                 dashboard_data.append([
                     call_id_link,
                     candidate_name,
@@ -670,66 +720,40 @@ class UltravoxInterface:
                     billed_duration or "",
                     summary_display,
                     transcript_display,
-                    short_summary or "",
-                    raw_created  # Hidden column for sorting
+                    short_summary or ""
                 ])
 
-            # Create DataFrame with hidden sort column
+            # Create DataFrame
             df = pd.DataFrame(dashboard_data, columns=[
-                "CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "TRANSCRIPT", "SHORT SUMMARY", "SORT_TIMESTAMP"
+                "CALL ID", "CANDIDATE NAME", "POSITION", "COMPANY", "PHONE NUMBER", "CREATED", "END REASON", "DURATION", "SUMMARY", "TRANSCRIPT", "SHORT SUMMARY"
             ])
 
-            # Sort by actual call creation time (most recent first)
-            df = df.sort_values('SORT_TIMESTAMP', ascending=False)
-
-            # Update total calls count
-            self.total_calls = len(df)
-
-            # Calculate pagination
+            # Calculate pagination info
             total_pages = (self.total_calls + self.calls_per_page - 1) // self.calls_per_page
             if total_pages == 0:
                 total_pages = 1
 
-            # Ensure current page is within bounds
-            if self.current_page < 1:
-                self.current_page = 1
-            elif self.current_page > total_pages:
-                self.current_page = total_pages
-
-            # Apply pagination
-            start_idx = (self.current_page - 1) * self.calls_per_page
-            end_idx = start_idx + self.calls_per_page
-            paginated_df = df.iloc[start_idx:end_idx]
-
-            # Remove the sort column before returning
-            paginated_df = paginated_df.drop(columns=['SORT_TIMESTAMP'])
-
-            # Create pagination info
             pagination_info = f"Page {self.current_page} of {total_pages} ( Total available calls : {self.total_calls})"
 
-            return paginated_df, pagination_info
+            logger.info(f"Displayed page {self.current_page}: {len(df)} calls")
+            return df, pagination_info
 
         except Exception as e:
             logger.error(f"Error refreshing call details: {e}")
             gr.Error(f"Error refreshing calls: {str(e)}")
             return pd.DataFrame(), "Page 0 of 0 ( Total available calls : 0)"
 
-    def navigate_to_page(self, page_number: int) -> Tuple[pd.DataFrame, str]:
-        """Navigate to a specific page."""
-        return self.refresh_call_details(page_number)
-
     def go_to_previous_page(self) -> Tuple[pd.DataFrame, str]:
         """Go to the previous page."""
-        if self.current_page > 1:
-            return self.refresh_call_details(self.current_page - 1)
-        return self.refresh_call_details(self.current_page)
+        if self.prev_cursor is not None:
+            return self.refresh_call_details("prev")
+        return self.refresh_call_details("refresh")
 
     def go_to_next_page(self) -> Tuple[pd.DataFrame, str]:
         """Go to the next page."""
-        total_pages = (self.total_calls + self.calls_per_page - 1) // self.calls_per_page
-        if self.current_page < total_pages:
-            return self.refresh_call_details(self.current_page + 1)
-        return self.refresh_call_details(self.current_page)
+        if self.next_cursor is not None:
+            return self.refresh_call_details("next")
+        return self.refresh_call_details("refresh")
 
     def export_calls_to_csv(self) -> Tuple[str, str]:
         """Export all calls data to CSV file for download."""
@@ -743,8 +767,27 @@ class UltravoxInterface:
             if not calls:
                 return "⚠️ No calls found to export", None
 
-            # Fetch all call details from Ultravox API in bulk
-            ultravox_bulk_data = self.call_manager.fetch_all_calls_bulk(limit=500)
+            # For CSV export, we need to fetch all calls, so use the old bulk method
+            # TODO: Implement proper bulk export with pagination
+            ultravox_bulk_data = {"results": [], "total": 0}
+
+            # Temporarily fetch multiple pages for export
+            all_calls = []
+            cursor = None
+            max_export_pages = 100  # Limit export to reasonable size
+            page_count = 0
+
+            while cursor is not None or page_count == 0:
+                page_data = self.call_manager.fetch_calls_page(page_size=50, cursor=cursor)
+                page_results = page_data.get('results', [])
+                all_calls.extend(page_results)
+                cursor = page_data.get('next_cursor')
+                page_count += 1
+
+                if page_count >= max_export_pages or not cursor:
+                    break
+
+            ultravox_bulk_data = {"results": all_calls, "total": len(all_calls)}
             ultravox_calls = ultravox_bulk_data.get('results', [])
             
             # Create a lookup dict for faster access
