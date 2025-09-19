@@ -293,6 +293,9 @@ class UltravoxCallManager:
             "firstSpeaker": "FIRST_SPEAKER_AGENT",
             "medium": {provider.lower(): {}},
             "recordingEnabled": True,
+            "vadSettings": {
+            "turnEndpointDelay": "1.00s"   
+            }
         }
 
         try:
