@@ -11,7 +11,8 @@ import re
 import time
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import pytz
 from supabase_client import SupabaseClient
 from assistants import (
@@ -284,7 +285,7 @@ class UltravoxCallManager:
             self.supabase_client = None
 
     def _create_ultravox_call(self, system_prompt: str, provider: str) -> str:
-        """Create a call via Ultravox API and return join URL."""
+        """Create a call via Ultravox API and return join URL with retry logic."""
         call_config = {
             "systemPrompt": system_prompt,
             "model": "fixie-ai/ultravox",
@@ -294,7 +295,7 @@ class UltravoxCallManager:
             "medium": {provider.lower(): {}},
             "recordingEnabled": True,
             "vadSettings": {
-            "turnEndpointDelay": "1.00s"   
+            "turnEndpointDelay": "1.00s"
             },
             "selectedTools": [
             {
@@ -306,30 +307,81 @@ class UltravoxCallManager:
         ]
         }
 
-        try:
-            response = requests.post(
-                "https://api.ultravox.ai/api/calls",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
-                },
-                json=call_config,
-            )
-            response.raise_for_status()
-            response_data = response.json()
-            join_url = response_data.get("joinUrl")
-            call_id = response_data.get("callId")
-            
-            logger.info(f"Ultravox Call ID: {call_id}")
-            print(f"Ultravox Call ID: {call_id}")  # Also print to ensure visibility
+        max_retries = 3
 
-            if not join_url:
-                raise gr.Error("Failed to create call")
-            return join_url, call_id
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.post(
+                    "https://api.ultravox.ai/api/calls",
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-API-Key": self.env_vars["ULTRAVOX_API_KEY"],
+                    },
+                    json=call_config,
+                )
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ultravox API error: {str(e)}")
-            raise gr.Error(str(e))
+                # Handle concurrency limit errors (429/503)
+                if response.status_code in [429, 503]:
+                    if attempt < max_retries:
+                        retry_after = response.headers.get('Retry-After')
+                        if retry_after:
+                            try:
+                                delay = int(retry_after)
+                            except ValueError:
+                                # Parse HTTP date format
+                                try:
+                                    retry_date = parsedate_to_datetime(retry_after)
+                                    delay = (retry_date - datetime.now(timezone.utc)).total_seconds()
+                                    delay = max(1, int(delay))  # At least 1 second
+                                except Exception:
+                                    # Fallback to exponential backoff
+                                    delay = 2 ** (attempt - 1)
+                                    logger.warning(f"Could not parse Retry-After header: {retry_after}")
+                        else:
+                            # Exponential backoff if no Retry-After header: 1s, 2s, 4s
+                            delay = 2 ** (attempt - 1)
+
+                        logger.warning(
+                            f"HTTP {response.status_code}: Concurrency limit reached. "
+                            f"Attempt {attempt}/{max_retries}. Retrying after {delay}s..."
+                        )
+                        time.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"Max retries ({max_retries}) exceeded. HTTP {response.status_code}")
+                        raise gr.Error(
+                            f"Concurrency limit reached. Failed after {max_retries} attempts. "
+                            f"Please try again later."
+                        )
+
+                # Check for other HTTP errors
+                response.raise_for_status()
+
+                response_data = response.json()
+                join_url = response_data.get("joinUrl")
+                call_id = response_data.get("callId")
+
+                if attempt > 1:
+                    logger.info(f"Call created successfully on attempt {attempt}")
+
+                logger.info(f"Ultravox Call ID: {call_id}")
+                print(f"Ultravox Call ID: {call_id}")  # Also print to ensure visibility
+
+                if not join_url:
+                    raise gr.Error("Failed to create call")
+                return join_url, call_id
+
+            except requests.exceptions.RequestException as e:
+                # Log and raise error if not a retry-able error
+                if attempt >= max_retries:
+                    logger.error(f"Ultravox API error after {attempt} attempts: {str(e)}")
+                    raise gr.Error(str(e))
+                else:
+                    logger.warning(f"Request failed on attempt {attempt}/{max_retries}: {str(e)}")
+                    # Will retry on next iteration
+
+        # Fallback error (should not reach here)
+        raise gr.Error(f"Failed to create call after {max_retries} attempts")
 
     def _initiate_twilio_call(self, join_url: str, formatted_number: str) -> None:
         """Initiate call via Twilio."""
@@ -345,7 +397,7 @@ class UltravoxCallManager:
                 from_=self.env_vars["TWILIO_PHONE_NUMBER"],
                 record=True,
             )
-            gr.Success(f"Twilio call initiated! Call SID: {call.sid}")
+            gr.Info(f"Twilio call initiated! Call SID: {call.sid}")
         except Exception as e:
             logger.error(f"Twilio error: {str(e)}")
             raise gr.Error(str(e))
