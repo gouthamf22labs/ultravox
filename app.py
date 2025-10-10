@@ -16,6 +16,7 @@ from email.utils import parsedate_to_datetime
 import pytz
 from supabase_client import SupabaseClient
 from assistants import (
+    FITMENT_CHECK_AGENT,
     INITIAL_SCREENING_AGENT,
     INTERVIEW_SCHEDULING_AGENT,
     MARKETING_OPS_MANAGER_ROCKETLANE_ASSISTANT,
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 ASSISTANT_TYPES = {
+    "Fitment Check Agent": FITMENT_CHECK_AGENT,
     "Initial Screening Agent [Frontend Staff Engineer-RocketLane]": INITIAL_SCREENING_AGENT,
     "Interview Scheduling": INTERVIEW_SCHEDULING_AGENT,
     "Marketing Ops Manager Rocketlane" : MARKETING_OPS_MANAGER_ROCKETLANE_ASSISTANT,
@@ -588,7 +590,7 @@ class UIComponentBuilder:
     """Builds reusable UI components."""
 
     @staticmethod
-    def create_provider_dropdown(value: str = "Twilio", elem_classes: str = "w-full") -> gr.Dropdown:
+    def create_provider_dropdown(value: str = "Plivo", elem_classes: str = "w-full") -> gr.Dropdown:
         """Create provider dropdown component."""
         return gr.Dropdown(
             choices=["Twilio", "Plivo"],
@@ -1274,7 +1276,7 @@ class UltravoxInterface:
 
         clear_btn_single.click(
             fn=lambda: [
-                "Twilio",
+                "Plivo",
                 f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",
                 "", ""
             ],
