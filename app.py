@@ -309,7 +309,7 @@ class UltravoxCallManager:
         ]
         }
 
-        max_retries = 3
+        max_retries = 5
 
         for attempt in range(1, max_retries + 1):
             try:
