@@ -674,34 +674,57 @@ class UltravoxInterface:
             return None, None
 
     def replace_qg_in_prompt(self, prompt: str, qg_data: Dict[str, str]) -> str:
-        """Replace Q&G placeholders in the prompt with actual values and remove empty ones."""
+        """Replace Q&G placeholders in the prompt with dynamically built screening questions (max 5)."""
         result = prompt
         
-        # Replace filled Q&G placeholders
+        # Build the screening questions section dynamically
+        screening_questions = []
+        
+        # Get all Q numbers (sorted)
+        q_numbers = sorted([int(key[1:]) for key in qg_data.keys() if key.startswith('Q')])
+        
+        # Limit to max 5 questions
+        q_numbers = q_numbers[:5]
+        
+        for q_num in q_numbers:
+            q_key = f"Q{q_num}"
+            g_key = f"G{q_num}"
+            
+            if q_key in qg_data and qg_data[q_key]:
+                q_text = qg_data[q_key]
+                g_text = qg_data.get(g_key, "")
+                
+                # Build Q&G block
+                qg_block = f"{q_key}: {q_text}\n{g_key}:\n{g_text}\n< wait for user response >\n"
+                screening_questions.append(qg_block)
+        
+        # Join all screening questions
+        screening_questions_text = "\n".join(screening_questions) if screening_questions else ""
+        
+        # Replace the {{SCREENING_QUESTIONS}} placeholder
+        result = result.replace("{{SCREENING_QUESTIONS}}", screening_questions_text)
+        
+        # Also support individual Q&G replacement for backward compatibility
         for key, value in qg_data.items():
             placeholder = f"{{{{{key}}}}}"
             result = result.replace(placeholder, value)
         
-        # Remove empty Q&G blocks (questions that weren't filled)
-        # Remove entire Q/G blocks that still have placeholders
-        for i in range(1, 11):
-            # Pattern to match: Q#: {{Q#}}\nG#:\n{{G#}}\n< wait for user response >\n
-            pattern = rf'Q{i}: \{{\{{Q{i}\}}\}}\s*\n\s*G{i}:\s*\n\s*\{{\{{G{i}\}}\}}\s*\n\s*< wait for user response >\s*\n*'
-            result = re.sub(pattern, '', result)
-        
         return result
 
-    def build_qg_dict(self, *values) -> Dict[str, str]:
-        """Build a dictionary from Q&G input values."""
+    def build_qg_dict(self, visibility, *values) -> Dict[str, str]:
+        """Build a dictionary from Q&G input values, only including visible pairs."""
         qg_dict = {}
         for i in range(0, len(values), 2):
             if i + 1 < len(values):
-                q_num = (i // 2) + 1
-                q_value = values[i] if values[i] else ""
-                g_value = values[i+1] if values[i+1] else ""
-                if q_value:  # Only add if question has value
-                    qg_dict[f"Q{q_num}"] = q_value
-                    qg_dict[f"G{q_num}"] = g_value
+                pair_index = i // 2  # 0-based index
+                # Only process if this Q&G pair is visible
+                if pair_index < len(visibility) and visibility[pair_index]:
+                    q_num = pair_index + 1
+                    q_value = values[i] if values[i] else ""
+                    g_value = values[i+1] if values[i+1] else ""
+                    if q_value:  # Only add if question has value
+                        qg_dict[f"Q{q_num}"] = q_value
+                        qg_dict[f"G{q_num}"] = g_value
         return qg_dict
 
     def refresh_call_details(self, direction: str = "refresh") -> Tuple[pd.DataFrame, str]:
@@ -1104,9 +1127,7 @@ class UltravoxInterface:
                     system_prompt_single = UIComponentBuilder.create_system_prompt_textarea()
 
                     # Q&G Section
-                    gr.Markdown("### 📝 Custom Questions & Guidelines")
-                    gr.Markdown("Add custom screening questions (Q1, Q2...) and guidelines (G1, G2...) that will replace `{{Q1}}`, `{{G1}}`, etc. in your prompt.")
-                    
+                    gr.Markdown("### 📝 Custom Questions & Guidelines")                    
                     with gr.Accordion("Q&G Pairs", open=True):
                         qg_inputs_single = []
                         qg_rows_single = []
@@ -1396,7 +1417,15 @@ class UltravoxInterface:
 
         # Q&G Add/Remove button handlers
         def add_more_qg_single(visibility):
-            """Show next Q&G pair for single call tab."""
+            """Show next Q&G pair for single call tab (max 5)."""
+            # Check if already at max (5 questions)
+            if sum(visibility) >= 5:
+                gr.Warning("Maximum 5 questions allowed")
+                updates = [visibility]
+                for i, visible in enumerate(visibility):
+                    updates.append(gr.update(visible=visible))
+                return [sum(visibility)] + updates
+            
             # Find first False (hidden row) and set it to True
             new_visibility = visibility.copy()
             for i in range(len(new_visibility)):
@@ -1414,7 +1443,15 @@ class UltravoxInterface:
             return [count] + updates
 
         def add_more_qg_batch(visibility):
-            """Show next Q&G pair for batch call tab."""
+            """Show next Q&G pair for batch call tab (max 5)."""
+            # Check if already at max (5 questions)
+            if sum(visibility) >= 5:
+                gr.Warning("Maximum 5 questions allowed")
+                updates = [visibility]
+                for i, visible in enumerate(visibility):
+                    updates.append(gr.update(visible=visible))
+                return [sum(visibility)] + updates
+            
             # Find first False (hidden row) and set it to True
             new_visibility = visibility.copy()
             for i in range(len(new_visibility)):
@@ -1433,15 +1470,27 @@ class UltravoxInterface:
 
         def create_remove_handler_single(row_index):
             """Create remove handler for a specific Q&G pair in single tab."""
-            def remove_qg(visibility):
+            def remove_qg(visibility, *qg_values):
                 # Hide the specified row (row_index is 1-based, so subtract 1)
                 new_visibility = visibility.copy()
                 new_visibility[row_index - 1] = False
+                
+                # Clear the Q and G values for this row
+                qg_values_list = list(qg_values)
+                q_idx = (row_index - 1) * 2
+                g_idx = q_idx + 1
+                if q_idx < len(qg_values_list):
+                    qg_values_list[q_idx] = ""  # Clear Q
+                if g_idx < len(qg_values_list):
+                    qg_values_list[g_idx] = ""  # Clear G
                 
                 # Update row visibility
                 updates = [new_visibility]
                 for i, visible in enumerate(new_visibility):
                     updates.append(gr.update(visible=visible))
+                # Update Q and G values
+                for val in qg_values_list:
+                    updates.append(val)
                 
                 # Calculate count for display
                 count = sum(new_visibility)
@@ -1450,15 +1499,27 @@ class UltravoxInterface:
 
         def create_remove_handler_batch(row_index):
             """Create remove handler for a specific Q&G pair in batch tab."""
-            def remove_qg(visibility):
+            def remove_qg(visibility, *qg_values):
                 # Hide the specified row (row_index is 1-based, so subtract 1)
                 new_visibility = visibility.copy()
                 new_visibility[row_index - 1] = False
+                
+                # Clear the Q and G values for this row
+                qg_values_list = list(qg_values)
+                q_idx = (row_index - 1) * 2
+                g_idx = q_idx + 1
+                if q_idx < len(qg_values_list):
+                    qg_values_list[q_idx] = ""  # Clear Q
+                if g_idx < len(qg_values_list):
+                    qg_values_list[g_idx] = ""  # Clear G
                 
                 # Update row visibility
                 updates = [new_visibility]
                 for i, visible in enumerate(new_visibility):
                     updates.append(gr.update(visible=visible))
+                # Update Q and G values
+                for val in qg_values_list:
+                    updates.append(val)
                 
                 # Calculate count for display
                 count = sum(new_visibility)
@@ -1481,26 +1542,26 @@ class UltravoxInterface:
         for row_idx, remove_btn in qg_remove_btns_single:
             remove_btn.click(
                 fn=create_remove_handler_single(row_idx),
-                inputs=[qg_visibility_single],
-                outputs=[qg_count_single, qg_visibility_single] + qg_rows_single
+                inputs=[qg_visibility_single] + qg_inputs_single,
+                outputs=[qg_count_single, qg_visibility_single] + qg_rows_single + qg_inputs_single
             )
 
         # Setup remove button handlers for batch tab
         for row_idx, remove_btn in qg_remove_btns_batch:
             remove_btn.click(
                 fn=create_remove_handler_batch(row_idx),
-                inputs=[qg_visibility_batch],
-                outputs=[qg_count_batch, qg_visibility_batch] + qg_rows_batch
+                inputs=[qg_visibility_batch] + qg_inputs_batch,
+                outputs=[qg_count_batch, qg_visibility_batch] + qg_rows_batch + qg_inputs_batch
             )
 
-        def initiate_call_with_qg(prov, prompt, c, n, at, *qg_values):
-            """Initiate call with Q&G replacements."""
+        def initiate_call_with_qg(prov, prompt, c, n, at, visibility, *qg_values):
+            """Initiate call with Q&G replacements (only visible questions, max 5)."""
             # Validate phone number
             if not n or not n.strip():
                 raise gr.Error("❌ Mobile number is required. Please enter a phone number.")
             
-            # Build Q&G dictionary
-            qg_dict = self.build_qg_dict(*qg_values)
+            # Build Q&G dictionary (only includes visible pairs)
+            qg_dict = self.build_qg_dict(visibility, *qg_values)
             
             # Log Q&G replacements
             if qg_dict:
@@ -1510,7 +1571,7 @@ class UltravoxInterface:
                     logger.info(f"  {key}: {value[:100]}..." if len(value) > 100 else f"  {key}: {value}")
                 logger.info("=" * 80)
             
-            # Replace Q&G in prompt
+            # Replace Q&G in prompt (max 5 questions enforced here)
             final_prompt = self.replace_qg_in_prompt(prompt, qg_dict)
             
             # Log final prompt
@@ -1530,22 +1591,36 @@ class UltravoxInterface:
             fn=initiate_call_with_qg,
             inputs=[
                 provider_single, system_prompt_single,
-                country_code_single, phone_number_single, assistant_type_single
+                country_code_single, phone_number_single, assistant_type_single,
+                qg_visibility_single
             ] + qg_inputs_single,
             outputs=[],
         )
 
+        def clear_single_form():
+            """Clear all form fields including Q&G pairs."""
+            # Clear basic fields
+            clear_values = [
+                "Plivo",  # provider
+                f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",  # country_code
+                "",  # phone_number
+                ""   # system_prompt
+            ]
+            # Clear all Q&G inputs (10 pairs = 20 fields)
+            clear_values.extend([""] * 20)  # Empty all Q and G fields
+            # Reset visibility state
+            clear_values.append([False] * 10)  # Hide all Q&G rows
+            # Reset row visibility updates
+            clear_values.extend([gr.update(visible=False)] * 10)
+            return clear_values
+
         clear_btn_single.click(
-            fn=lambda: [
-                "Plivo",
-                f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",
-                "", ""
-            ],
+            fn=clear_single_form,
             inputs=[],
             outputs=[
                 provider_single, country_code_single,
                 phone_number_single, system_prompt_single
-            ],
+            ] + qg_inputs_single + [qg_visibility_single] + qg_rows_single,
         )
 
         # Batch call event handlers
@@ -1555,9 +1630,9 @@ class UltravoxInterface:
             outputs=[csv_columns_state, csv_preview]
         )
 
-        def start_batch_with_qg(provider, prompt, csv_data, delay, *qg_values):
-            """Start batch with Q&G replacements."""
-            qg_dict = self.build_qg_dict(*qg_values)
+        def start_batch_with_qg(provider, prompt, csv_data, delay, visibility, *qg_values):
+            """Start batch with Q&G replacements (only visible questions, max 5)."""
+            qg_dict = self.build_qg_dict(visibility, *qg_values)
             
             # Log Q&G replacements for batch
             if qg_dict:
@@ -1580,7 +1655,7 @@ class UltravoxInterface:
 
         start_batch_btn.click(
             fn=start_batch_with_qg,
-            inputs=[provider_batch, system_prompt_batch, csv_columns_state, call_delay] + qg_inputs_batch,
+            inputs=[provider_batch, system_prompt_batch, csv_columns_state, call_delay, qg_visibility_batch] + qg_inputs_batch,
             outputs=[batch_status]
         )
 
