@@ -15,19 +15,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import pytz
 from supabase_client import SupabaseClient
-from assistants import (
-    FITMENT_CHECK_AGENT,
-    INITIAL_SCREENING_AGENT,
-    INTERVIEW_SCHEDULING_AGENT,
-    MARKETING_OPS_MANAGER_ROCKETLANE_ASSISTANT,
-    INTERVIEW_SCREENING_AGENT,
-    RESUME_UPDATE_AGENT,
-    REAL_ESTATE_AGENT,
-    CUSTOMER_SUPPORT_AGENT,
-    BANKING_SUPPORT_AGENT,
-    HEALTHCARE_AGENT,
-    INSURANCE_ASSISTANT,
-)
+from assistants import FITMENT_CHECK_AGENT
 
 load_dotenv(override=True)
 
@@ -38,16 +26,6 @@ logger = logging.getLogger(__name__)
 
 ASSISTANT_TYPES = {
     "Fitment Check Agent": FITMENT_CHECK_AGENT,
-    "Initial Screening Agent [Frontend Staff Engineer-RocketLane]": INITIAL_SCREENING_AGENT,
-    "Interview Scheduling": INTERVIEW_SCHEDULING_AGENT,
-    "Marketing Ops Manager Rocketlane" : MARKETING_OPS_MANAGER_ROCKETLANE_ASSISTANT,
-    "Interview Screening": INTERVIEW_SCREENING_AGENT,
-    "Resume Update": RESUME_UPDATE_AGENT,
-    "Real Estate": REAL_ESTATE_AGENT,
-    "Customer Support": CUSTOMER_SUPPORT_AGENT,
-    "Banking Support": BANKING_SUPPORT_AGENT,
-    "Healthcare": HEALTHCARE_AGENT,
-    "Insurance Policy Agent": INSURANCE_ASSISTANT,
 }
 
 
