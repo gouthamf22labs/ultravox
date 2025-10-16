@@ -1124,10 +1124,11 @@ class UltravoxInterface:
                             elem_classes="w-2/3",
                         )
 
-                    system_prompt_single = UIComponentBuilder.create_system_prompt_textarea()
+                    # Hidden state to store the system prompt
+                    system_prompt_single = gr.State(list(ASSISTANT_TYPES.values())[0])
 
                     # Q&G Section
-                    gr.Markdown("### 📝 Custom Questions & Guidelines")                    
+                    gr.Markdown("### 📝 Q&G Pairs - Questions to Ask")                    
                     with gr.Accordion("Q&G Pairs", open=True):
                         qg_inputs_single = []
                         qg_rows_single = []
@@ -1211,13 +1212,11 @@ class UltravoxInterface:
                         provider_batch = UIComponentBuilder.create_provider_dropdown(elem_classes="w-1/2")
                         assistant_type_batch = UIComponentBuilder.create_assistant_dropdown(elem_classes="w-1/2")
 
-                    system_prompt_batch = UIComponentBuilder.create_system_prompt_textarea(
-                        label="Call Prompt Template"
-                    )
+                    # Hidden state to store the system prompt
+                    system_prompt_batch = gr.State(list(ASSISTANT_TYPES.values())[0])
 
                     # Q&G Section for Batch
-                    gr.Markdown("### 📝 Custom Questions & Guidelines")
-                    gr.Markdown("Add custom screening questions and guidelines. Use `{{Q1}}`, `{{G1}}`, etc. in your prompt template above.")
+                    gr.Markdown("### 📝 Q&G Pairs - Questions to Ask")
                     
                     with gr.Accordion("Q&G Pairs", open=True):
                         qg_inputs_batch = []
@@ -1604,7 +1603,6 @@ class UltravoxInterface:
                 "Plivo",  # provider
                 f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",  # country_code
                 "",  # phone_number
-                ""   # system_prompt
             ]
             # Clear all Q&G inputs (10 pairs = 20 fields)
             clear_values.extend([""] * 20)  # Empty all Q and G fields
@@ -1619,7 +1617,7 @@ class UltravoxInterface:
             inputs=[],
             outputs=[
                 provider_single, country_code_single,
-                phone_number_single, system_prompt_single
+                phone_number_single
             ] + qg_inputs_single + [qg_visibility_single] + qg_rows_single,
         )
 
