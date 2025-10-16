@@ -1113,80 +1113,8 @@ class UltravoxInterface:
             )
 
             with gr.Tabs():
-                # Single Call Tab
-                with gr.TabItem("Single Call"):
-                    with gr.Row():
-                        country_code_single = UIComponentBuilder.create_country_code_dropdown()
-                        phone_number_single = gr.Textbox(
-                            label="Mobile Number",
-                            placeholder="Enter mobile number without country code",
-                            max_lines=1,
-                            elem_classes="w-2/3",
-                        )
-
-                    # Hidden states - always use Fitment Check Agent
-                    assistant_type_single = gr.State("Fitment Check Agent")
-                    system_prompt_single = gr.State(FITMENT_CHECK_AGENT)
-
-                    # Q&G Section
-                    gr.Markdown("### Q&G Pairs - Questions to Ask")                    
-                    with gr.Accordion("Q&G Pairs", open=True):
-                        qg_inputs_single = []
-                        qg_rows_single = []
-                        qg_remove_btns_single = []
-                        
-                        for i in range(1, 11):  # Support up to 10 Q&G pairs
-                            with gr.Row(visible=False) as row:  # All rows initially hidden
-                                with gr.Column(scale=1):
-                                    q = gr.TextArea(
-                                        label=f"Q{i}",
-                                        placeholder=f"Enter question {i}...",
-                                        lines=2,
-                                        value="",
-                                        elem_classes="w-full"
-                                    )
-                                with gr.Column(scale=1):
-                                    g = gr.TextArea(
-                                        label=f"G{i}",
-                                        placeholder=f"Enter guideline {i}...",
-                                        lines=2,
-                                        value="",
-                                        elem_classes="w-full"
-                                    )
-                                with gr.Column(scale=0, min_width=60):
-                                    remove_btn = gr.Button(
-                                        "🗑️",
-                                        size="sm",
-                                        variant="secondary",
-                                        elem_classes="mt-6"
-                                    )
-                                    qg_remove_btns_single.append((i, remove_btn))
-                            qg_inputs_single.extend([q, g])
-                            qg_rows_single.append(row)
-                        
-                        add_qg_btn_single = gr.Button(
-                            "➕ Add Q&G Pair",
-                            variant="secondary",
-                            elem_classes="w-full"
-                        )
-                    
-                    qg_count_single = gr.State(0)  # Track number of visible Q&G pairs
-                    qg_visibility_single = gr.State([False] * 10)  # Track which rows are visible (10 pairs)
-
-                    with gr.Row():
-                        submit_btn_single = gr.Button(
-                            "📞 Initiate Call",
-                            variant="primary",
-                            elem_classes="w-1/2 bg-blue-600 text-white"
-                        )
-                        clear_btn_single = gr.Button(
-                            "🧹 Clear",
-                            variant="secondary",
-                            elem_classes="w-1/2 bg-gray-400 text-white"
-                        )
-
-                # Batch Calls Tab
-                with gr.TabItem("Batch Calls (CSV)"):
+                # Calls Tab
+                with gr.TabItem("Calls (CSV)"):
                     gr.Markdown("### 📋 CSV Column Requirements")
                     gr.Markdown("""
                     - `phone_number` - Phone numbers without country code, Required
@@ -1362,11 +1290,6 @@ class UltravoxInterface:
                         )
 
             self._setup_event_handlers(
-                # Single call components
-                system_prompt_single, assistant_type_single,
-                country_code_single, phone_number_single, submit_btn_single,
-                clear_btn_single, qg_inputs_single, qg_count_single, qg_rows_single, qg_visibility_single, 
-                add_qg_btn_single, qg_remove_btns_single,
                 # Batch call components
                 system_prompt_batch, assistant_type_batch, csv_file,
                 csv_columns_state, csv_preview, start_batch_btn,
@@ -1382,10 +1305,6 @@ class UltravoxInterface:
     def _setup_event_handlers(self, *components) -> None:
         """Setup all event handlers for the interface."""
         (
-            system_prompt_single, assistant_type_single,
-            country_code_single, phone_number_single, submit_btn_single,
-            clear_btn_single, qg_inputs_single, qg_count_single, qg_rows_single, qg_visibility_single,
-            add_qg_btn_single, qg_remove_btns_single,
             system_prompt_batch, assistant_type_batch,
             csv_file, csv_columns_state, csv_preview, start_batch_btn,
             call_delay, stop_batch_btn, refresh_status_btn,
@@ -1408,32 +1327,6 @@ class UltravoxInterface:
             return "Plivo" if code == "91" else "Twilio"
 
         # Q&G Add/Remove button handlers
-        def add_more_qg_single(visibility):
-            """Show next Q&G pair for single call tab (max 5)."""
-            # Check if already at max (5 questions)
-            if sum(visibility) >= 5:
-                gr.Warning("Maximum 5 questions allowed")
-                updates = [visibility]
-                for i, visible in enumerate(visibility):
-                    updates.append(gr.update(visible=visible))
-                return [sum(visibility)] + updates
-            
-            # Find first False (hidden row) and set it to True
-            new_visibility = visibility.copy()
-            for i in range(len(new_visibility)):
-                if not new_visibility[i]:
-                    new_visibility[i] = True
-                    break
-            
-            # Update row visibility
-            updates = [new_visibility]
-            for i, visible in enumerate(new_visibility):
-                updates.append(gr.update(visible=visible))
-            
-            # Calculate count for display
-            count = sum(new_visibility)
-            return [count] + updates
-
         def add_more_qg_batch(visibility):
             """Show next Q&G pair for batch call tab (max 5)."""
             # Check if already at max (5 questions)
@@ -1459,35 +1352,6 @@ class UltravoxInterface:
             # Calculate count for display
             count = sum(new_visibility)
             return [count] + updates
-
-        def create_remove_handler_single(row_index):
-            """Create remove handler for a specific Q&G pair in single tab."""
-            def remove_qg(visibility, *qg_values):
-                # Hide the specified row (row_index is 1-based, so subtract 1)
-                new_visibility = visibility.copy()
-                new_visibility[row_index - 1] = False
-                
-                # Clear the Q and G values for this row
-                qg_values_list = list(qg_values)
-                q_idx = (row_index - 1) * 2
-                g_idx = q_idx + 1
-                if q_idx < len(qg_values_list):
-                    qg_values_list[q_idx] = ""  # Clear Q
-                if g_idx < len(qg_values_list):
-                    qg_values_list[g_idx] = ""  # Clear G
-                
-                # Update row visibility
-                updates = [new_visibility]
-                for i, visible in enumerate(new_visibility):
-                    updates.append(gr.update(visible=visible))
-                # Update Q and G values
-                for val in qg_values_list:
-                    updates.append(val)
-                
-                # Calculate count for display
-                count = sum(new_visibility)
-                return [count] + updates
-            return remove_qg
 
         def create_remove_handler_batch(row_index):
             """Create remove handler for a specific Q&G pair in batch tab."""
@@ -1518,25 +1382,11 @@ class UltravoxInterface:
                 return [count] + updates
             return remove_qg
 
-        add_qg_btn_single.click(
-            fn=add_more_qg_single,
-            inputs=[qg_visibility_single],
-            outputs=[qg_count_single, qg_visibility_single] + qg_rows_single
-        )
-
         add_qg_btn_batch.click(
             fn=add_more_qg_batch,
             inputs=[qg_visibility_batch],
             outputs=[qg_count_batch, qg_visibility_batch] + qg_rows_batch
         )
-
-        # Setup remove button handlers for single tab
-        for row_idx, remove_btn in qg_remove_btns_single:
-            remove_btn.click(
-                fn=create_remove_handler_single(row_idx),
-                inputs=[qg_visibility_single] + qg_inputs_single,
-                outputs=[qg_count_single, qg_visibility_single] + qg_rows_single + qg_inputs_single
-            )
 
         # Setup remove button handlers for batch tab
         for row_idx, remove_btn in qg_remove_btns_batch:
@@ -1545,77 +1395,6 @@ class UltravoxInterface:
                 inputs=[qg_visibility_batch] + qg_inputs_batch,
                 outputs=[qg_count_batch, qg_visibility_batch] + qg_rows_batch + qg_inputs_batch
             )
-
-        def initiate_call_with_qg(prompt, c, n, at, visibility, *qg_values):
-            """Initiate call with Q&G replacements (only visible questions, max 5)."""
-            # Validate phone number
-            if not n or not n.strip():
-                raise gr.Error("❌ Mobile number is required. Please enter a phone number.")
-            
-            # Automatically determine provider based on country code
-            provider = get_provider_from_country_code(c)
-            logger.info(f"Auto-selected provider: {provider} for country code: {c}")
-            
-            # Build Q&G dictionary (only includes visible pairs)
-            qg_dict = self.build_qg_dict(visibility, *qg_values)
-            
-            # Log Q&G replacements
-            if qg_dict:
-                logger.info("=" * 80)
-                logger.info("Q&G REPLACEMENTS:")
-                for key, value in sorted(qg_dict.items()):
-                    logger.info(f"  {key}: {value[:100]}..." if len(value) > 100 else f"  {key}: {value}")
-                logger.info("=" * 80)
-            
-            # Replace Q&G in prompt (max 5 questions enforced here)
-            final_prompt = self.replace_qg_in_prompt(prompt, qg_dict)
-            
-            # Log final prompt
-            logger.info("=" * 80)
-            logger.info("FINAL CALL PROMPT (after Q&G replacements):")
-            logger.info("-" * 80)
-            logger.info(final_prompt)
-            logger.info("=" * 80)
-            
-            # Initiate call with modified prompt
-            call_id = self.call_manager.initiate_call(
-                provider, final_prompt, get_country_code(c), n, at
-            )
-            return None
-
-        submit_btn_single.click(
-            fn=initiate_call_with_qg,
-            inputs=[
-                system_prompt_single,
-                country_code_single, phone_number_single, assistant_type_single,
-                qg_visibility_single
-            ] + qg_inputs_single,
-            outputs=[],
-        )
-
-        def clear_single_form():
-            """Clear all form fields including Q&G pairs."""
-            # Clear basic fields
-            clear_values = [
-                f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",  # country_code
-                "",  # phone_number
-            ]
-            # Clear all Q&G inputs (10 pairs = 20 fields)
-            clear_values.extend([""] * 20)  # Empty all Q and G fields
-            # Reset visibility state
-            clear_values.append([False] * 10)  # Hide all Q&G rows
-            # Reset row visibility updates
-            clear_values.extend([gr.update(visible=False)] * 10)
-            return clear_values
-
-        clear_btn_single.click(
-            fn=clear_single_form,
-            inputs=[],
-            outputs=[
-                country_code_single,
-                phone_number_single
-            ] + qg_inputs_single + [qg_visibility_single] + qg_rows_single,
-        )
 
         # Batch call event handlers
         csv_file.change(
