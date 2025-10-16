@@ -1227,17 +1227,6 @@ class UltravoxInterface:
 
                     csv_columns_state = gr.State([])
 
-                    gr.Markdown("### Processing Settings")
-                    with gr.Row():
-                        call_delay = gr.Number(
-                            label="Delay Between Calls (seconds)",
-                            value=5,
-                            minimum=2,
-                            maximum=60,
-                            step=1,
-                            elem_classes="w-full"
-                        )
-
                     gr.Markdown("### Batch Processing")
                     with gr.Row():
                         start_batch_btn = gr.Button(
@@ -1332,7 +1321,7 @@ class UltravoxInterface:
                 # Batch call components
                 system_prompt_batch, assistant_type_batch, csv_file,
                 csv_columns_state, csv_preview, provider_dropdown, start_batch_btn,
-                call_delay, stop_batch_btn,
+                stop_batch_btn,
                 refresh_status_btn, batch_status, batch_results, qg_inputs_batch, qg_count_batch, 
                 qg_rows_batch, qg_visibility_batch, add_qg_btn_batch, qg_remove_btns_batch,
                 # Call Details components
@@ -1346,7 +1335,7 @@ class UltravoxInterface:
         (
             system_prompt_batch, assistant_type_batch,
             csv_file, csv_columns_state, csv_preview, provider_dropdown, start_batch_btn,
-            call_delay, stop_batch_btn, refresh_status_btn,
+            stop_batch_btn, refresh_status_btn,
             batch_status, batch_results, qg_inputs_batch, qg_count_batch, qg_rows_batch, qg_visibility_batch,
             add_qg_btn_batch, qg_remove_btns_batch,
             refresh_calls_btn, export_csv_btn,
@@ -1433,9 +1422,9 @@ class UltravoxInterface:
             outputs=[csv_columns_state, csv_preview]
         )
 
-        def start_batch_with_qg(prompt, csv_data, delay, provider, visibility, *qg_values):
+        def start_batch_with_qg(prompt, csv_data, provider, visibility, *qg_values):
             """Start batch with Q&G replacements (only visible questions, max 5).
-            Uses the selected provider for all calls in the batch."""
+            Uses the selected provider for all calls in the batch with 5 second delay."""
             qg_dict = self.build_qg_dict(visibility, *qg_values)
             
             # Log Q&G replacements for batch
@@ -1455,12 +1444,12 @@ class UltravoxInterface:
             logger.info(final_prompt)
             logger.info("=" * 80)
             
-            # Use the selected provider for all calls
-            return self.batch_processor.start_async_processing(provider, final_prompt, csv_data, delay)
+            # Use the selected provider for all calls with 5 second delay
+            return self.batch_processor.start_async_processing(provider, final_prompt, csv_data, 5)
 
         start_batch_btn.click(
             fn=start_batch_with_qg,
-            inputs=[system_prompt_batch, csv_columns_state, call_delay, provider_dropdown, qg_visibility_batch] + qg_inputs_batch,
+            inputs=[system_prompt_batch, csv_columns_state, provider_dropdown, qg_visibility_batch] + qg_inputs_batch,
             outputs=[batch_status]
         )
 
