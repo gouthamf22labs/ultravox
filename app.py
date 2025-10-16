@@ -1012,7 +1012,7 @@ class UltravoxInterface:
 
     def create_interface(self) -> gr.Blocks:
         """Create the main Gradio interface."""
-        with gr.Blocks(theme="soft", css="""
+        with gr.Blocks(title="Fitment Check", theme="soft", css="""
         footer {display: none !important;}
         .gradio-container {min-height: 0px !important;}
         """, head="""
