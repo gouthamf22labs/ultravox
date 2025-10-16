@@ -1182,6 +1182,9 @@ class UltravoxInterface:
                     # Q&G Section for Batch
                     gr.Markdown("### Q&G Pairs - Questions to Ask")
                     
+                    with gr.Row():
+                        gr.HTML('<span data-testid="block-info" class="svelte-1gfkn6j">Q&G Pairs</span>')
+                    
                     with gr.Accordion("Q&G Pairs", open=True):
                         qg_inputs_batch = []
                         qg_rows_batch = []
