@@ -236,24 +236,24 @@ class BatchProcessor:
     ) -> str:
         """Start batch processing in a separate thread."""
         if self.is_processing:
-            return "❌ Batch processing already running"
+            return "Error: Batch processing already running"
 
         is_valid, error_msg = self.validate_csv_data(csv_data)
         if not is_valid:
-            return f"❌ {error_msg}"
+            return f"Error: {error_msg}"
 
         def run_batch():
             return self.process_batch_calls(provider, system_prompt, csv_data, delay)
 
         self._thread = threading.Thread(target=run_batch)
         self._thread.start()
-        return "🚀 Batch processing started! Check the progress below."
+        return "Batch processing started! Check the progress below."
 
     def stop_processing(self) -> str:
         """Stop the batch processing."""
         logger.info("Batch processing stopped by user")
         self.is_processing = False
-        return "🛑 Batch processing stopped"
+        return "Batch processing stopped"
 
     def get_status(self) -> str:
         """Get current batch processing status."""
@@ -872,14 +872,14 @@ class UltravoxInterface:
     def export_calls_to_csv(self) -> Tuple[str, str]:
         """Export all calls data to CSV file for download."""
         if not self.call_manager.supabase_client:
-            return "⚠️ Supabase not configured - cannot export data", None
+            return "Warning: Supabase not configured - cannot export data", None
 
         try:
             # Get all calls from Supabase
             calls = self.call_manager.supabase_client.get_all_calls()
 
             if not calls:
-                return "⚠️ No calls found to export", None
+                return "Warning: No calls found to export", None
 
             # For CSV export, we need to fetch all calls, so use the old bulk method
             # TODO: Implement proper bulk export with pagination
@@ -986,11 +986,11 @@ class UltravoxInterface:
             file_path = os.path.join(temp_dir, filename)
             df.to_csv(file_path, index=False, encoding='utf-8')
             
-            return f"✅ Successfully exported {len(df)} calls", file_path
+            return f"Successfully exported {len(df)} calls", file_path
 
         except Exception as e:
             logger.error(f"Error exporting calls to CSV: {e}")
-            return f"❌ Error exporting calls: {str(e)}", None
+            return f"Error exporting calls: {str(e)}", None
 
 
     def format_datetime(self, iso_string: str) -> str:
@@ -1115,7 +1115,7 @@ class UltravoxInterface:
             with gr.Tabs():
                 # Calls Tab
                 with gr.TabItem("Calls (CSV)"):
-                    gr.Markdown("### 📋 CSV Column Requirements")
+                    gr.Markdown("### CSV Column Requirements")
                     gr.Markdown("""
                     - `phone_number` - Phone numbers without country code, Required
                     - `country_code` - Country codes (e.g., +91, +1, +44), Required
@@ -1168,7 +1168,7 @@ class UltravoxInterface:
                                     )
                                 with gr.Column(scale=0, min_width=60):
                                     remove_btn = gr.Button(
-                                        "🗑️",
+                                        "Remove",
                                         size="sm",
                                         variant="secondary",
                                         elem_classes="mt-6"
@@ -1178,7 +1178,7 @@ class UltravoxInterface:
                             qg_rows_batch.append(row)
                         
                         add_qg_btn_batch = gr.Button(
-                            "➕ Add Q&G Pair",
+                            "Add Q&G Pair",
                             variant="secondary",
                             elem_classes="w-full"
                         )
@@ -1188,7 +1188,7 @@ class UltravoxInterface:
 
                     csv_columns_state = gr.State([])
 
-                    gr.Markdown("### ⚙️ Processing Settings")
+                    gr.Markdown("### Processing Settings")
                     with gr.Row():
                         call_delay = gr.Number(
                             label="Delay Between Calls (seconds)",
@@ -1199,20 +1199,20 @@ class UltravoxInterface:
                             elem_classes="w-full"
                         )
 
-                    gr.Markdown("### 🚀 Batch Processing")
+                    gr.Markdown("### Batch Processing")
                     with gr.Row():
                         start_batch_btn = gr.Button(
-                            "🚀 Start Batch Processing",
+                            "Start Batch Processing",
                             variant="primary",
                             elem_classes="w-1/3"
                         )
                         stop_batch_btn = gr.Button(
-                            "🛑 Stop Processing",
+                            "Stop Processing",
                             variant="secondary",
                             elem_classes="w-1/3"
                         )
                         refresh_status_btn = gr.Button(
-                            "🔄 Refresh Status",
+                            "Refresh Status",
                             variant="secondary",
                             elem_classes="w-1/3"
                         )
@@ -1232,16 +1232,16 @@ class UltravoxInterface:
 
                 # Call Details Tab
                 with gr.TabItem("Call History"):
-                    gr.Markdown("### 📞 Call History")
+                    gr.Markdown("### Call History")
 
                     with gr.Row():
                         refresh_calls_btn = gr.Button(
-                            "🔄 Refresh Call History",
+                            "Refresh Call History",
                             variant="primary",
                             elem_classes="w-1/2"
                         )
                         export_csv_btn = gr.Button(
-                            "📥 Export to CSV",
+                            "Export to CSV",
                             variant="secondary",
                             elem_classes="w-1/2"
                         )
@@ -1273,7 +1273,7 @@ class UltravoxInterface:
                     # Pagination controls at bottom
                     with gr.Row():
                         prev_btn = gr.Button(
-                            "⬅️ Previous",
+                            "Previous",
                             variant="secondary",
                             elem_classes="w-1/4"
                         )
@@ -1284,7 +1284,7 @@ class UltravoxInterface:
                             elem_classes="w-1/2 text-center"
                         )
                         next_btn = gr.Button(
-                            "Next ➡️",
+                            "Next",
                             variant="secondary",
                             elem_classes="w-1/4"
                         )
@@ -1457,7 +1457,7 @@ class UltravoxInterface:
         # Export CSV event handler with loading state
         def show_export_loading():
             return (
-                "🔄 Exporting calls data... Please wait",
+                "Exporting calls data... Please wait",
                 gr.update(visible=True),
                 gr.update(visible=False)
             )
