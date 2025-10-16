@@ -119,7 +119,7 @@ class BatchProcessor:
         csv_data: pd.DataFrame,
         delay: int = 2
     ) -> List[Dict[str, Any]]:
-        """Process batch calls from CSV data. Provider is auto-determined per row based on country_code."""
+        """Process batch calls from CSV data using the selected provider."""
         logger.info(f"Starting batch processing: {len(csv_data)} calls")
 
         self.is_processing = True
@@ -149,11 +149,8 @@ class BatchProcessor:
                 phone_number = str(row['phone_number'])
                 country_code = str(row['country_code'])
                 
-                # Automatically determine provider based on country code
-                # India (+91) uses Plivo, others use Twilio
-                code = country_code.strip().lstrip("+")
-                auto_provider = "Plivo" if code == "91" else "Twilio"
-                logger.info(f"Auto-selected provider: {auto_provider} for country code: {country_code}")
+                # Use the provider selected from dropdown
+                logger.info(f"Using provider: {provider} for {phone_number}")
 
                 # Extract candidate details if available
                 candidate_name = None
@@ -172,7 +169,7 @@ class BatchProcessor:
                     # Determine assistant type from the system prompt or use default
                     assistant_type = "Batch Call"
                     call_id = self.call_manager.initiate_call(
-                        auto_provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name, position, company
+                        provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name, position, company
                     )
                     result = {
                         "row": index + 1,
@@ -1031,6 +1028,13 @@ class UltravoxInterface:
         p.svelte-1pch949 {
             color: #000000 !important;
         }
+        span[data-testid="block-info"], .svelte-1gfkn6j {
+            background-color: rgb(237, 233, 254) !important;
+            color: rgb(132, 55, 187) !important;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }
         .primary, button.primary, .gradio-button.primary {
             background-color: #8437bb !important;
             color: white !important;
@@ -1160,6 +1164,16 @@ class UltravoxInterface:
                         datatype=["str"],
                         elem_classes="w-full"
                     )
+
+                    # Provider selection
+                    with gr.Row():
+                        provider_dropdown = gr.Dropdown(
+                            choices=["Plivo", "Twilio"],
+                            label="Provider",
+                            value="Plivo",
+                            interactive=True,
+                            elem_classes="w-full"
+                        )
 
                     # Hidden states - always use Fitment Check Agent
                     assistant_type_batch = gr.State("Fitment Check Agent")
@@ -1317,7 +1331,7 @@ class UltravoxInterface:
             self._setup_event_handlers(
                 # Batch call components
                 system_prompt_batch, assistant_type_batch, csv_file,
-                csv_columns_state, csv_preview, start_batch_btn,
+                csv_columns_state, csv_preview, provider_dropdown, start_batch_btn,
                 call_delay, stop_batch_btn,
                 refresh_status_btn, batch_status, batch_results, qg_inputs_batch, qg_count_batch, 
                 qg_rows_batch, qg_visibility_batch, add_qg_btn_batch, qg_remove_btns_batch,
@@ -1331,7 +1345,7 @@ class UltravoxInterface:
         """Setup all event handlers for the interface."""
         (
             system_prompt_batch, assistant_type_batch,
-            csv_file, csv_columns_state, csv_preview, start_batch_btn,
+            csv_file, csv_columns_state, csv_preview, provider_dropdown, start_batch_btn,
             call_delay, stop_batch_btn, refresh_status_btn,
             batch_status, batch_results, qg_inputs_batch, qg_count_batch, qg_rows_batch, qg_visibility_batch,
             add_qg_btn_batch, qg_remove_btns_batch,
@@ -1341,15 +1355,6 @@ class UltravoxInterface:
 
         def get_country_code(selection: str) -> str:
             return selection.split("(")[1].strip(")")
-        
-        def get_provider_from_country_code(country_code: str) -> str:
-            """Determine provider based on country code. India (+91) uses Plivo, others use Twilio."""
-            # Extract just the code if it's in format like "India (+91)"
-            if "(" in country_code:
-                country_code = country_code.split("(")[1].strip(")")
-            # Remove + if present
-            code = country_code.strip().lstrip("+")
-            return "Plivo" if code == "91" else "Twilio"
 
         # Q&G Add/Remove button handlers
         def add_more_qg_batch(visibility):
@@ -1428,9 +1433,9 @@ class UltravoxInterface:
             outputs=[csv_columns_state, csv_preview]
         )
 
-        def start_batch_with_qg(prompt, csv_data, delay, visibility, *qg_values):
+        def start_batch_with_qg(prompt, csv_data, delay, provider, visibility, *qg_values):
             """Start batch with Q&G replacements (only visible questions, max 5).
-            Provider is automatically determined per row based on country_code in CSV."""
+            Uses the selected provider for all calls in the batch."""
             qg_dict = self.build_qg_dict(visibility, *qg_values)
             
             # Log Q&G replacements for batch
@@ -1445,18 +1450,17 @@ class UltravoxInterface:
             
             # Log final batch prompt
             logger.info("=" * 80)
-            logger.info("BATCH CALL PROMPT (after Q&G replacements):")
+            logger.info(f"BATCH CALL PROMPT (Provider: {provider}, after Q&G replacements):")
             logger.info("-" * 80)
             logger.info(final_prompt)
             logger.info("=" * 80)
             
-            # Note: Provider selection is now handled in BatchProcessor.process_batch_calls
-            # Pass None as provider, it will be determined per row
-            return self.batch_processor.start_async_processing(None, final_prompt, csv_data, delay)
+            # Use the selected provider for all calls
+            return self.batch_processor.start_async_processing(provider, final_prompt, csv_data, delay)
 
         start_batch_btn.click(
             fn=start_batch_with_qg,
-            inputs=[system_prompt_batch, csv_columns_state, call_delay, qg_visibility_batch] + qg_inputs_batch,
+            inputs=[system_prompt_batch, csv_columns_state, call_delay, provider_dropdown, qg_visibility_batch] + qg_inputs_batch,
             outputs=[batch_status]
         )
 
