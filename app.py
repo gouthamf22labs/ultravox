@@ -952,7 +952,10 @@ class UltravoxInterface:
 
     def create_interface(self) -> gr.Blocks:
         """Create the main Gradio interface."""
-        with gr.Blocks(theme="soft", head="""
+        with gr.Blocks(theme="soft", css="""
+        footer {display: none !important;}
+        .gradio-container {min-height: 0px !important;}
+        """, head="""
         <script>
         function showSummary(callId, summary) {
             showModal('Call Summary', callId, summary);
@@ -1367,7 +1370,7 @@ def main() -> None:
     """Main application entry point."""
     app = UltravoxInterface()
     interface = app.create_interface()
-    interface.launch(share=True, server_name="0.0.0.0")
+    interface.launch(share=True, server_name="0.0.0.0", show_api=False)
 
 
 if __name__ == "__main__":
