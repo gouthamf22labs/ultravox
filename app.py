@@ -138,8 +138,8 @@ class BatchProcessor:
         csv_data: pd.DataFrame,
         delay: int = 2
     ) -> List[Dict[str, Any]]:
-        """Process batch calls from CSV data."""
-        logger.info(f"Starting batch processing: {len(csv_data)} calls with {provider}")
+        """Process batch calls from CSV data. Provider is auto-determined per row based on country_code."""
+        logger.info(f"Starting batch processing: {len(csv_data)} calls")
 
         self.is_processing = True
         self.batch_results = []
@@ -167,6 +167,12 @@ class BatchProcessor:
 
                 phone_number = str(row['phone_number'])
                 country_code = str(row['country_code'])
+                
+                # Automatically determine provider based on country code
+                # India (+91) uses Plivo, others use Twilio
+                code = country_code.strip().lstrip("+")
+                auto_provider = "Plivo" if code == "91" else "Twilio"
+                logger.info(f"Auto-selected provider: {auto_provider} for country code: {country_code}")
 
                 # Extract candidate details if available
                 candidate_name = None
@@ -185,7 +191,7 @@ class BatchProcessor:
                     # Determine assistant type from the system prompt or use default
                     assistant_type = "Batch Call"
                     call_id = self.call_manager.initiate_call(
-                        provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name, position, company
+                        auto_provider, personalized_prompt, country_code, phone_number, assistant_type, candidate_name, position, company
                     )
                     result = {
                         "row": index + 1,
@@ -1102,19 +1108,13 @@ class UltravoxInterface:
         </script>
         """) as interface:
             gr.Markdown(
-                "# 📞 Ultravox Call Manager",
+                "# Fitment Check Hirevox",
                 elem_classes="text-3xl font-bold text-center"
             )
 
             with gr.Tabs():
                 # Single Call Tab
                 with gr.TabItem("Single Call"):
-                    with gr.Row():
-                        provider_single = UIComponentBuilder.create_provider_dropdown()
-
-                    with gr.Row():
-                        assistant_type_single = UIComponentBuilder.create_assistant_dropdown()
-
                     with gr.Row():
                         country_code_single = UIComponentBuilder.create_country_code_dropdown()
                         phone_number_single = gr.Textbox(
@@ -1124,11 +1124,12 @@ class UltravoxInterface:
                             elem_classes="w-2/3",
                         )
 
-                    # Hidden state to store the system prompt
-                    system_prompt_single = gr.State(list(ASSISTANT_TYPES.values())[0])
+                    # Hidden states - always use Fitment Check Agent
+                    assistant_type_single = gr.State("Fitment Check Agent")
+                    system_prompt_single = gr.State(FITMENT_CHECK_AGENT)
 
                     # Q&G Section
-                    gr.Markdown("### 📝 Q&G Pairs - Questions to Ask")                    
+                    gr.Markdown("### Q&G Pairs - Questions to Ask")                    
                     with gr.Accordion("Q&G Pairs", open=True):
                         qg_inputs_single = []
                         qg_rows_single = []
@@ -1207,16 +1208,12 @@ class UltravoxInterface:
                         elem_classes="w-full"
                     )
 
-                    gr.Markdown("### 🔧 Configuration")
-                    with gr.Row():
-                        provider_batch = UIComponentBuilder.create_provider_dropdown(elem_classes="w-1/2")
-                        assistant_type_batch = UIComponentBuilder.create_assistant_dropdown(elem_classes="w-1/2")
-
-                    # Hidden state to store the system prompt
-                    system_prompt_batch = gr.State(list(ASSISTANT_TYPES.values())[0])
+                    # Hidden states - always use Fitment Check Agent
+                    assistant_type_batch = gr.State("Fitment Check Agent")
+                    system_prompt_batch = gr.State(FITMENT_CHECK_AGENT)
 
                     # Q&G Section for Batch
-                    gr.Markdown("### 📝 Q&G Pairs - Questions to Ask")
+                    gr.Markdown("### Q&G Pairs - Questions to Ask")
                     
                     with gr.Accordion("Q&G Pairs", open=True):
                         qg_inputs_batch = []
@@ -1366,14 +1363,14 @@ class UltravoxInterface:
 
             self._setup_event_handlers(
                 # Single call components
-                assistant_type_single, system_prompt_single, provider_single,
+                system_prompt_single, assistant_type_single,
                 country_code_single, phone_number_single, submit_btn_single,
                 clear_btn_single, qg_inputs_single, qg_count_single, qg_rows_single, qg_visibility_single, 
                 add_qg_btn_single, qg_remove_btns_single,
                 # Batch call components
-                assistant_type_batch, system_prompt_batch, csv_file,
+                system_prompt_batch, assistant_type_batch, csv_file,
                 csv_columns_state, csv_preview, start_batch_btn,
-                provider_batch, call_delay, stop_batch_btn,
+                call_delay, stop_batch_btn,
                 refresh_status_btn, batch_status, batch_results, qg_inputs_batch, qg_count_batch, 
                 qg_rows_batch, qg_visibility_batch, add_qg_btn_batch, qg_remove_btns_batch,
                 # Call Details components
@@ -1385,13 +1382,13 @@ class UltravoxInterface:
     def _setup_event_handlers(self, *components) -> None:
         """Setup all event handlers for the interface."""
         (
-            assistant_type_single, system_prompt_single, provider_single,
+            system_prompt_single, assistant_type_single,
             country_code_single, phone_number_single, submit_btn_single,
             clear_btn_single, qg_inputs_single, qg_count_single, qg_rows_single, qg_visibility_single,
             add_qg_btn_single, qg_remove_btns_single,
-            assistant_type_batch, system_prompt_batch,
+            system_prompt_batch, assistant_type_batch,
             csv_file, csv_columns_state, csv_preview, start_batch_btn,
-            provider_batch, call_delay, stop_batch_btn, refresh_status_btn,
+            call_delay, stop_batch_btn, refresh_status_btn,
             batch_status, batch_results, qg_inputs_batch, qg_count_batch, qg_rows_batch, qg_visibility_batch,
             add_qg_btn_batch, qg_remove_btns_batch,
             refresh_calls_btn, export_csv_btn,
@@ -1400,19 +1397,15 @@ class UltravoxInterface:
 
         def get_country_code(selection: str) -> str:
             return selection.split("(")[1].strip(")")
-
-        # Single call event handlers
-        assistant_type_single.change(
-            fn=self.update_prompt,
-            inputs=[assistant_type_single],
-            outputs=[system_prompt_single]
-        )
-
-        assistant_type_batch.change(
-            fn=self.update_prompt,
-            inputs=[assistant_type_batch],
-            outputs=[system_prompt_batch]
-        )
+        
+        def get_provider_from_country_code(country_code: str) -> str:
+            """Determine provider based on country code. India (+91) uses Plivo, others use Twilio."""
+            # Extract just the code if it's in format like "India (+91)"
+            if "(" in country_code:
+                country_code = country_code.split("(")[1].strip(")")
+            # Remove + if present
+            code = country_code.strip().lstrip("+")
+            return "Plivo" if code == "91" else "Twilio"
 
         # Q&G Add/Remove button handlers
         def add_more_qg_single(visibility):
@@ -1553,11 +1546,15 @@ class UltravoxInterface:
                 outputs=[qg_count_batch, qg_visibility_batch] + qg_rows_batch + qg_inputs_batch
             )
 
-        def initiate_call_with_qg(prov, prompt, c, n, at, visibility, *qg_values):
+        def initiate_call_with_qg(prompt, c, n, at, visibility, *qg_values):
             """Initiate call with Q&G replacements (only visible questions, max 5)."""
             # Validate phone number
             if not n or not n.strip():
                 raise gr.Error("❌ Mobile number is required. Please enter a phone number.")
+            
+            # Automatically determine provider based on country code
+            provider = get_provider_from_country_code(c)
+            logger.info(f"Auto-selected provider: {provider} for country code: {c}")
             
             # Build Q&G dictionary (only includes visible pairs)
             qg_dict = self.build_qg_dict(visibility, *qg_values)
@@ -1582,14 +1579,14 @@ class UltravoxInterface:
             
             # Initiate call with modified prompt
             call_id = self.call_manager.initiate_call(
-                prov, final_prompt, get_country_code(c), n, at
+                provider, final_prompt, get_country_code(c), n, at
             )
             return None
 
         submit_btn_single.click(
             fn=initiate_call_with_qg,
             inputs=[
-                provider_single, system_prompt_single,
+                system_prompt_single,
                 country_code_single, phone_number_single, assistant_type_single,
                 qg_visibility_single
             ] + qg_inputs_single,
@@ -1600,7 +1597,6 @@ class UltravoxInterface:
             """Clear all form fields including Q&G pairs."""
             # Clear basic fields
             clear_values = [
-                "Plivo",  # provider
                 f"{COUNTRY_CODES[0]['name']} ({COUNTRY_CODES[0]['code']})",  # country_code
                 "",  # phone_number
             ]
@@ -1616,7 +1612,7 @@ class UltravoxInterface:
             fn=clear_single_form,
             inputs=[],
             outputs=[
-                provider_single, country_code_single,
+                country_code_single,
                 phone_number_single
             ] + qg_inputs_single + [qg_visibility_single] + qg_rows_single,
         )
@@ -1628,8 +1624,9 @@ class UltravoxInterface:
             outputs=[csv_columns_state, csv_preview]
         )
 
-        def start_batch_with_qg(provider, prompt, csv_data, delay, visibility, *qg_values):
-            """Start batch with Q&G replacements (only visible questions, max 5)."""
+        def start_batch_with_qg(prompt, csv_data, delay, visibility, *qg_values):
+            """Start batch with Q&G replacements (only visible questions, max 5).
+            Provider is automatically determined per row based on country_code in CSV."""
             qg_dict = self.build_qg_dict(visibility, *qg_values)
             
             # Log Q&G replacements for batch
@@ -1649,11 +1646,13 @@ class UltravoxInterface:
             logger.info(final_prompt)
             logger.info("=" * 80)
             
-            return self.batch_processor.start_async_processing(provider, final_prompt, csv_data, delay)
+            # Note: Provider selection is now handled in BatchProcessor.process_batch_calls
+            # Pass None as provider, it will be determined per row
+            return self.batch_processor.start_async_processing(None, final_prompt, csv_data, delay)
 
         start_batch_btn.click(
             fn=start_batch_with_qg,
-            inputs=[provider_batch, system_prompt_batch, csv_columns_state, call_delay, qg_visibility_batch] + qg_inputs_batch,
+            inputs=[system_prompt_batch, csv_columns_state, call_delay, qg_visibility_batch] + qg_inputs_batch,
             outputs=[batch_status]
         )
 
