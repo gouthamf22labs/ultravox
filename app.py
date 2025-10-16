@@ -996,6 +996,50 @@ class UltravoxInterface:
         with gr.Blocks(title="Fitment Check", theme="soft", css="""
         footer {display: none !important;}
         .gradio-container {min-height: 0px !important;}
+         label span {
+            background-color: #ede9fe !important;
+            color: #8437bb !important;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        label[data-testid="block-label"], .svelte-i3tvor {
+            background-color: #ede9fe !important;
+            color: #8437bb !important;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .wrap.svelte-12ioyct, .wrap.svelte-12ioyct .or {
+            color: #8437bb !important;
+        }
+        .wrap.svelte-12ioyct svg {
+            stroke: #8437bb !important;
+        }
+        button[role="tab"]{
+            background-color: #f9fafb !important;
+            color: #8437bb !important;
+        }
+        button[role="tab"].selected, .svelte-1tcem6n.selected {
+            background-color: #ede9fe !important;
+            color: #8437bb !important;
+        }
+        button[role="tab"]::after, button[role="tab"].selected::after {
+            display: none !important;
+            background: none !important;
+        }
+        p.svelte-1pch949 {
+            color: #000000 !important;
+        }
+        .primary, button.primary, .gradio-button.primary {
+            background-color: #8437bb !important;
+            color: white !important;
+            border: none !important;
+        }
+        .primary:hover, button.primary:hover, .gradio-button.primary:hover {
+            background-color: #6b2d99 !important;
+            color: white !important;
+        }
         """, head="""
         <script>
         function showSummary(callId, summary) {
