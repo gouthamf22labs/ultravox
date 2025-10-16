@@ -643,19 +643,36 @@ class UltravoxInterface:
         return ASSISTANT_TYPES[selected_type]
 
     def process_csv_upload(self, file) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
-        """Process uploaded CSV file."""
+        """Process uploaded CSV file with automatic encoding detection."""
         if file is None:
             return None, None
 
-        try:
-            self.csv_data = pd.read_csv(
-                file.name, dtype={'country_code': str, 'phone_number': str}
-            )
-            preview_df = self.csv_data.head(3)
-            return self.csv_data, preview_df
-        except Exception as e:
-            logger.error(f"CSV processing error: {str(e)}")
-            return None, None
+        # Try multiple encodings in order of likelihood
+        encodings = ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252', 'windows-1252']
+        
+        for encoding in encodings:
+            try:
+                self.csv_data = pd.read_csv(
+                    file.name, 
+                    dtype={'country_code': str, 'phone_number': str},
+                    encoding=encoding
+                )
+                preview_df = self.csv_data.head(3)
+                logger.info(f"CSV file successfully loaded with {encoding} encoding")
+                gr.Info(f"CSV loaded successfully ({encoding} encoding)")
+                return self.csv_data, preview_df
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                logger.error(f"CSV processing error with {encoding}: {str(e)}")
+                if encoding == encodings[-1]:  # Last encoding attempt
+                    gr.Error(f"Error reading CSV: {str(e)}")
+                continue
+        
+        # If all encodings fail, show error
+        logger.error("CSV processing failed: Unable to decode file with common encodings")
+        gr.Error("Unable to read CSV file. Please ensure it's a valid CSV file with proper encoding.")
+        return None, None
 
     def replace_qg_in_prompt(self, prompt: str, qg_data: Dict[str, str]) -> str:
         """Replace Q&G placeholders in the prompt with dynamically built screening questions (max 5)."""
