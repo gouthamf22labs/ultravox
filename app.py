@@ -1540,7 +1540,7 @@ def main() -> None:
     """Main application entry point."""
     app = UltravoxInterface()
     interface = app.create_interface()
-    interface.launch(share=True, server_name="0.0.0.0", show_api=False)
+    interface.launch(share=True, server_name="0.0.0.0", show_api=False, favicon_path="assets/favicon.ico")
 
 
 if __name__ == "__main__":
